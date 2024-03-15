@@ -1,5 +1,6 @@
-from dataclasses import dataclass, field, fields, is_dataclass
-from typing import Optional
+from dataclasses import dataclass, field, fields, is_dataclass, Field
+from typing import Optional, List, Any
+from copy import copy
 
 from omegaconf import MISSING
 
@@ -125,3 +126,49 @@ def init_empty(cfg):
             setattr(cfg, f.name, MISSING)
 
     return cfg
+
+
+def merge_cfgs(base: Config, override: Config) -> Config:
+    """
+    Merge two config objects
+    """
+    for f in fields(override):
+        v = getattr(override, f.name)
+        if is_dataclass(f.type):
+            new_v = merge_cfgs(getattr(base, f.name), v)
+        elif v != MISSING:
+            continue
+        else:
+            new_v = getattr(base, f.name)
+        setattr(override, f.name, new_v)
+    return override
+
+
+def mix_and_mash(cfgs: List[Config], sub_cfgs: List[Any], f: Field) -> List[Config]:
+    """
+    Compute the cartesian product of parent and child configs
+    """
+    new_cfgs = []
+    for cfg in cfgs:
+        for sub_cfg in sub_cfgs:
+            setattr(cfg, f.name, sub_cfg)
+            new_cfgs.append(copy(cfg))
+    return new_cfgs
+
+
+def dfs_config_tree(tree) -> List[Config]:
+    """
+    Depth-first search to create all config combinations from a config tree
+    """
+    cfgs = [init_empty(copy(tree))]
+    for f in fields(tree):
+        v = getattr(tree, f.name)
+        if v == MISSING:
+            continue
+        elif is_dataclass(f.type):
+            sub_cfgs = dfs_config_tree(v)
+        else:
+            assert len(v) > 0, "Each field in the config tree must be a list of values"
+            sub_cfgs = v
+        cfgs = mix_and_mash(cfgs, sub_cfgs, f)
+    return cfgs
