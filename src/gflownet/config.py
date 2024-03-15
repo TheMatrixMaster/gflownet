@@ -128,9 +128,29 @@ def init_empty(cfg):
     return cfg
 
 
+def init_from_dict(cfg: Config, d: dict) -> Config:
+    """
+    Initialize a dataclass instance with all fields set to MISSING,
+    except for the fields that are present in the provided dictionary.
+    """
+    for f in fields(cfg):
+        if is_dataclass(f.type):
+            r = init_from_dict(f.type(), d[f.name])
+            setattr(cfg, f.name, r)
+        elif f.name in d:
+            setattr(cfg, f.name, d[f.name])
+        else:
+            setattr(cfg, f.name, MISSING)
+
+    return cfg
+
+
 def merge_cfgs(base: Config, override: Config) -> Config:
     """
-    Merge two config objects
+    Merge two config objects such that the fields of the override
+    object take precedence over the base object. This is meant to
+    be used to merge the user provided configuration with the default
+    configuration.
     """
     for f in fields(override):
         v = getattr(override, f.name)
