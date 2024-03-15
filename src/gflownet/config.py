@@ -1,12 +1,12 @@
-from dataclasses import dataclass, field, fields, is_dataclass, Field
+from dataclasses import dataclass, field, fields, asdict, is_dataclass, Field
 from typing import Optional, List, Any
 from copy import copy
 
 from omegaconf import MISSING
 
-from gflownet.algo.config import AlgoConfig
+from gflownet.algo.config import AlgoConfig, TBVariant
 from gflownet.data.config import ReplayConfig
-from gflownet.models.config import ModelConfig
+from gflownet.models.config import ModelConfig, SeqPosEnc
 from gflownet.tasks.config import TasksConfig
 from gflownet.utils.config import ConditionalsConfig
 
@@ -192,3 +192,21 @@ def dfs_config_tree(tree) -> List[Config]:
             sub_cfgs = v
         cfgs = mix_and_mash(cfgs, sub_cfgs, f)
     return cfgs
+
+
+def custom_asdict_factory(data):
+    def convert_value(obj):
+        if isinstance(obj, TBVariant):
+            return obj.value
+        elif isinstance(obj, SeqPosEnc):
+            return obj.value
+        return obj
+
+    return dict((k, convert_value(v)) for k, v in data if v != MISSING)
+
+
+def strip_missing(cfg: Config) -> dict:
+    """
+    Recursively remove all fields in cfg that value MISSING
+    """
+    return asdict(cfg, dict_factory=custom_asdict_factory)

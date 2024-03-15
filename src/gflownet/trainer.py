@@ -69,7 +69,7 @@ class GFNTrainer:
             config, Config
         )  # make sure the config is a Config object, and not the Config class itself
         self.cfg: Config = OmegaConf.merge(self.default_cfg, config)
-
+        
         self.device = torch.device(self.cfg.device)
         set_main_process_device(self.device)
         # Print the loss every `self.print_every` iterations
