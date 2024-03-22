@@ -1,59 +1,66 @@
 import socket
 from typing import Callable, Dict, List, Tuple, Union
 
+import pickle
 import numpy as np
 import torch
 import torch.nn as nn
 import torch_geometric.data as gd
-from rdkit import Chem
-from rdkit.Chem import AllChem
-from rdkit.Chem import DataStructs
 from rdkit.Chem.rdchem import Mol as RDMol
 from torch import Tensor
-from torch.utils.data import Dataset
 from torch_geometric.data import Data
 
 from gflownet import FlatRewards, GFNTask, RewardScalar
 from gflownet.config import Config, init_empty
 from gflownet.envs.frag_mol_env import FragMolBuildingEnvContext, Graph
-from gflownet.models import bengio2021flow
+from gflownet.models import bengio2021flow, mmc
 from gflownet.online_trainer import StandardOnlineTrainer
 from gflownet.utils.conditioning import TemperatureConditional
 from gflownet.utils.misc import get_worker_device
 from gflownet.utils.transforms import to_logreward
 
-TARGET_MOL = "O=C(NCc1cc(CCc2cccc(N3CCC(c4cc(-c5cc(-c6cncnc6)[nH]n5)ccn4)CC3)c2)ccn1)c1cccc2ccccc12"
+from sklearn.metrics.pairwise import cosine_similarity
 
 
-class ToySimilarityTask(GFNTask):
-    """Sets up a task where the reward is computed using the Tanimoto distance between
-    the Morgan fingerprints of the generated molecule and a target molecule.
+class MorphSimilarityTask(GFNTask):
+    """Sets up a task where the reward is computed using the cosine distance between the latent
+    morphology representation of a target molecule and the latent representation of a generated molecule
     """
 
     def __init__(
         self,
-        target: str,
+        target,
         cfg: Config,
         rng: np.random.Generator = None,
         wrap_model: Callable[[nn.Module], nn.Module] = None,
     ):
         self._wrap_model = wrap_model
         self.rng = rng
-        self.target = Chem.MolFromSmiles(target)
-        self.fpgen = AllChem.GetMorganGenerator(radius=2, fpSize=2048)
-        self.target_fp = self.fpgen.GetSparseCountFingerprint(self.target)
         self.models = self._load_task_models()
+        self.target = self._setup_target_representation(target)
         self.temperature_conditional = TemperatureConditional(cfg, rng)
         self.num_cond_dim = self.temperature_conditional.encoding_size()
 
     def flat_reward_transform(self, y: Union[float, Tensor]) -> FlatRewards:
-        return FlatRewards(torch.as_tensor(y) / 4)
+        return FlatRewards(torch.as_tensor(y) / 8)
 
     def inverse_flat_reward_transform(self, rp):
-        return rp * 4
+        return rp * 8
 
     def _load_task_models(self):
-        return {}
+        ckpt_path = "/home/mila/s/stephen.lu/gfn_gene/res/mmc/morph_struct.ckpt"
+        cfg_dir = "/home/mila/s/stephen.lu/gfn_gene/multimodal_contrastive/configs"
+        cfg_name = "puma_sm_gmc.yaml"
+        worker_device = get_worker_device()
+        model = mmc.MMC_Proxy(cfg_name, cfg_dir, ckpt_path, worker_device).get_model()
+        return {"mmc": model}
+
+    def _setup_target_representation(self, target):
+        # TODO: find a nicer way to add None batch axis to the 1D inputs
+        target["inputs"]["morph"] = target["inputs"]["morph"][None, ...]
+        target["inputs"]["joint"]["morph"] = target["inputs"]["joint"]["morph"][None, ...]
+        pred = self.models["mmc"](target, mod_name="joint")
+        return pred.cpu().detach().numpy()
 
     def sample_conditional_information(self, n: int, train_it: int) -> Dict[str, Tensor]:
         return self.temperature_conditional.sample(n)
@@ -62,28 +69,30 @@ class ToySimilarityTask(GFNTask):
         return RewardScalar(self.temperature_conditional.transform(cond_info, to_logreward(flat_reward)))
 
     def compute_reward_from_graph(self, graphs: List[Data]) -> Tensor:
-        raise NotImplementedError
+        """
+        Gets the latent representation of the molecules and computes the reward as the
+        cosine distance between these latents and the target latent
+        """
+        batch = gd.Batch.from_data_list([i for i in graphs if i is not None])
+        batch.to(self.models["mmc"].device if hasattr(self.models["mmc"], "device") else get_worker_device())
+        preds = self.models["mmc"]({"inputs": {"struct": batch}}, mod_name="struct").data.cpu().detach().numpy()
+        preds = cosine_similarity(self.target, preds) + 1
+        preds[np.isnan(preds)] = 0
+        return self.flat_reward_transform(preds).clip(1e-4, 2).reshape((-1,))
 
     def compute_flat_rewards(self, mols: List[RDMol]) -> Tuple[FlatRewards, Tensor]:
-        """
-        Computes Tanimoto distance between morgan fingerprints of src and target mols
-        we don't need to transform from RDMol to graph here since we can compute the
-        naive reward directly in the molecule space
-        """
-        fps = [self.fpgen.GetSparseCountFingerprint(m) for m in mols]
-        is_valid = torch.tensor([fp is not None for fp in fps]).bool()
+        graphs = [mmc.mol2graph(i) for i in mols]
+        is_valid = torch.tensor([i is not None for i in graphs]).bool()
         if not is_valid.any():
             return FlatRewards(torch.zeros((0, 1))), is_valid
 
-        preds = torch.as_tensor(
-            [DataStructs.TanimotoSimilarity(fp, self.target_fp) for fp in fps if fp is not None]
-        ).reshape(-1, 1)
+        preds = self.compute_reward_from_graph(graphs).reshape((-1, 1))
         assert len(preds) == is_valid.sum()
         return FlatRewards(preds), is_valid
 
 
-class ToySimilarityTrainer(StandardOnlineTrainer):
-    task: ToySimilarityTask
+class MorphSimilarityTrainer(StandardOnlineTrainer):
+    task: MorphSimilarityTask
 
     def set_default_hps(self, cfg: Config):
         cfg.hostname = socket.gethostname()
@@ -120,8 +129,14 @@ class ToySimilarityTrainer(StandardOnlineTrainer):
         cfg.replay.warmup = 1_000
 
     def setup_task(self):
-        self.task = ToySimilarityTask(
-            target=TARGET_MOL,
+        target_path = "/home/mila/s/stephen.lu/gfn_gene/res/mmc/sample.pkl"
+        with open(target_path, "rb") as f:
+            target = pickle.load(f)
+
+        assert "inputs" in target
+
+        self.task = MorphSimilarityTask(
+            target=target,
             cfg=self.cfg,
             rng=self.rng,
             wrap_model=self._wrap_for_mp,
@@ -142,7 +157,7 @@ def main():
     config.log_dir = "/home/mila/s/stephen.lu/scratch/gfn_gene/toy_task"
     config.device = "cuda" if torch.cuda.is_available() else "cpu"
     config.overwrite_existing_exp = True
-    config.num_training_steps = 10_000
+    config.num_training_steps = 100
     config.validate_every = 0
     config.num_validation_gen_steps = 0
     config.num_final_gen_steps = 0
@@ -152,7 +167,7 @@ def main():
     config.cond.temperature.sample_dist = "uniform"
     config.cond.temperature.dist_params = [0, 64.0]
 
-    trial = ToySimilarityTrainer(config)
+    trial = MorphSimilarityTrainer(config)
     trial.run()
 
 

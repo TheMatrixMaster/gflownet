@@ -208,14 +208,15 @@ def main():
     config.log_dir = f"./logs/debug_run_seh_frag_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
     config.device = "cuda" if torch.cuda.is_available() else "cpu"
     config.overwrite_existing_exp = True
-    config.num_training_steps = 1_00
+    config.num_training_steps = 1000
     config.validate_every = 20
     config.num_final_gen_steps = 10
-    config.num_workers = 8
+    config.num_workers = 0
     config.opt.lr_decay = 20_000
     config.algo.sampling_tau = 0.99
     config.cond.temperature.sample_dist = "uniform"
     config.cond.temperature.dist_params = [0, 64.0]
+    config.replay.use = True
 
     trial = SEHFragTrainer(config)
     trial.run()
