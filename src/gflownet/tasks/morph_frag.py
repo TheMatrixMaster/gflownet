@@ -12,12 +12,13 @@ from torch_geometric.data import Data
 
 from gflownet import FlatRewards, GFNTask, RewardScalar
 from gflownet.config import Config, init_empty
-from gflownet.envs.frag_mol_env import FragMolBuildingEnvContext, Graph
+from gflownet.envs.frag_mol_env import FragMolBuildingEnvContext
 from gflownet.models import bengio2021flow, mmc
 from gflownet.online_trainer import StandardOnlineTrainer
 from gflownet.utils.conditioning import TemperatureConditional
 from gflownet.utils.misc import get_worker_device
 from gflownet.utils.transforms import to_logreward
+from gflownet.utils.multiobjective_hooks import AtomicPropertiesHook
 
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -29,37 +30,48 @@ class MorphSimilarityTask(GFNTask):
 
     def __init__(
         self,
-        target,
+        raw_target,
         cfg: Config,
         rng: np.random.Generator = None,
         wrap_model: Callable[[nn.Module], nn.Module] = None,
     ):
         self._wrap_model = wrap_model
         self.rng = rng
+        self.cfg = cfg
         self.models = self._load_task_models()
-        self.target = self._setup_target_representation(target)
+        self.target = self._setup_target_representation(raw_target)
+        self.mmc_proxy.log_target_properties(raw_target, self.target, mode=self.cfg.task.morph_sim.target_mode)
         self.temperature_conditional = TemperatureConditional(cfg, rng)
         self.num_cond_dim = self.temperature_conditional.encoding_size()
 
     def flat_reward_transform(self, y: Union[float, Tensor]) -> FlatRewards:
-        return FlatRewards(torch.as_tensor(y) / 8)
+        return FlatRewards(torch.as_tensor(y))
 
     def inverse_flat_reward_transform(self, rp):
-        return rp * 8
+        return rp
 
     def _load_task_models(self):
-        ckpt_path = "/home/mila/s/stephen.lu/gfn_gene/res/mmc/morph_struct.ckpt"
-        cfg_dir = "/home/mila/s/stephen.lu/gfn_gene/multimodal_contrastive/configs"
-        cfg_name = "puma_sm_gmc.yaml"
-        worker_device = get_worker_device()
-        model = mmc.MMC_Proxy(cfg_name, cfg_dir, ckpt_path, worker_device).get_model()
+        ckpt_path = self.cfg.task.morph_sim.proxy_path
+        cfg_dir = self.cfg.task.morph_sim.config_dir
+        cfg_name = self.cfg.task.morph_sim.config_name
+        self.mmc_proxy = mmc.MMC_Proxy(cfg_name, cfg_dir, ckpt_path, get_worker_device())
+
+        if self.cfg.num_workers > 0:
+            model = self.mmc_proxy.get_model(self._wrap_model)
+        else:
+            model = self._wrap_model(self.mmc_proxy.get_model())
+
         return {"mmc": model}
 
     def _setup_target_representation(self, target):
         # TODO: find a nicer way to add None batch axis to the 1D inputs
         target["inputs"]["morph"] = target["inputs"]["morph"][None, ...]
         target["inputs"]["joint"]["morph"] = target["inputs"]["joint"]["morph"][None, ...]
-        pred = self.models["mmc"](target, mod_name="joint")
+        target["inputs"] = mmc.to_device(target["inputs"], device=get_worker_device())
+        assert self.cfg.task.morph_sim.target_mode in ["morph", "joint"], "Invalid target mode"
+        pred = self.models["mmc"](target, mod_name=self.cfg.task.morph_sim.target_mode)
+        # in reality, we may only have access to the morphology / transcriptomics of the target
+        # but we may not always have access to a target molecular structure
         return pred.cpu().detach().numpy()
 
     def sample_conditional_information(self, n: int, train_it: int) -> Dict[str, Tensor]:
@@ -75,10 +87,12 @@ class MorphSimilarityTask(GFNTask):
         """
         batch = gd.Batch.from_data_list([i for i in graphs if i is not None])
         batch.to(self.models["mmc"].device if hasattr(self.models["mmc"], "device") else get_worker_device())
-        preds = self.models["mmc"]({"inputs": {"struct": batch}}, mod_name="struct").data.cpu().detach().numpy()
-        preds = cosine_similarity(self.target, preds) + 1
+        inputs = {"inputs": {"struct": batch}}
+
+        preds = self.models["mmc"](inputs, mod_name="struct").data.cpu().detach().numpy()
+        preds = (cosine_similarity(self.target, preds) + 1) / 2
         preds[np.isnan(preds)] = 0
-        return self.flat_reward_transform(preds).clip(1e-4, 2).reshape((-1,))
+        return self.flat_reward_transform(preds).clip(1e-4, 1).reshape((-1,))
 
     def compute_flat_rewards(self, mols: List[RDMol]) -> Tuple[FlatRewards, Tensor]:
         graphs = [mmc.mol2graph(i) for i in mols]
@@ -129,14 +143,14 @@ class MorphSimilarityTrainer(StandardOnlineTrainer):
         cfg.replay.warmup = 1_000
 
     def setup_task(self):
-        target_path = "/home/mila/s/stephen.lu/gfn_gene/res/mmc/sample.pkl"
+        target_path = self.cfg.task.morph_sim.target_path
         with open(target_path, "rb") as f:
             target = pickle.load(f)
 
         assert "inputs" in target
 
         self.task = MorphSimilarityTask(
-            target=target,
+            raw_target=target,
             cfg=self.cfg,
             rng=self.rng,
             wrap_model=self._wrap_for_mp,
@@ -146,8 +160,13 @@ class MorphSimilarityTrainer(StandardOnlineTrainer):
         self.ctx = FragMolBuildingEnvContext(
             max_frags=self.cfg.algo.max_nodes,
             num_cond_dim=self.task.num_cond_dim,
-            fragments=bengio2021flow.FRAGMENTS_18 if self.cfg.task.seh.reduced_frag else bengio2021flow.FRAGMENTS,
+            # try using the smaller set of 18 fragments instead of the whole set
+            fragments=bengio2021flow.FRAGMENTS_18 if self.cfg.task.morph_sim.reduced_frag else bengio2021flow.FRAGMENTS,
         )
+
+    def setup(self):
+        super().setup()
+        self.sampling_hooks.append(AtomicPropertiesHook())
 
 
 def main():
@@ -157,15 +176,26 @@ def main():
     config.log_dir = "/home/mila/s/stephen.lu/scratch/gfn_gene/toy_task"
     config.device = "cuda" if torch.cuda.is_available() else "cpu"
     config.overwrite_existing_exp = True
-    config.num_training_steps = 100
+    config.pickle_mp_messages = True
+    config.num_training_steps = 5000
     config.validate_every = 0
     config.num_validation_gen_steps = 0
     config.num_final_gen_steps = 0
-    config.num_workers = 0
+    config.num_workers = 8
     config.opt.lr_decay = 20_000
-    config.algo.sampling_tau = 0.99
-    config.cond.temperature.sample_dist = "uniform"
-    config.cond.temperature.dist_params = [0, 64.0]
+    config.algo.sampling_tau = 0.95
+    config.algo.max_nodes = 9
+    config.algo.train_random_action_prob = 0.01
+    config.cond.temperature.sample_dist = "constant"
+    config.cond.temperature.dist_params = [64.0]
+    config.cond.temperature.num_thermometer_dim = 1
+
+    config.task.morph_sim.target_path = "/home/mila/s/stephen.lu/gfn_gene/res/mmc/sample_0.pkl"
+    config.task.morph_sim.proxy_path = "/home/mila/s/stephen.lu/gfn_gene/res/mmc/morph_struct.ckpt"
+    config.task.morph_sim.config_dir = "/home/mila/s/stephen.lu/gfn_gene/multimodal_contrastive/configs"
+    config.task.morph_sim.config_name = "puma_sm_gmc.yaml"
+    config.task.morph_sim.reduced_frag = False
+    config.task.morph_sim.target_mode = "joint"
 
     trial = MorphSimilarityTrainer(config)
     trial.run()

@@ -146,11 +146,11 @@ def main():
     config.validate_every = 0
     config.num_validation_gen_steps = 0
     config.num_final_gen_steps = 0
-    config.num_workers = 0
+    config.num_workers = 8
     config.opt.lr_decay = 20_000
     config.algo.sampling_tau = 0.99
-    config.cond.temperature.sample_dist = "uniform"
-    config.cond.temperature.dist_params = [0, 64.0]
+    config.cond.temperature.sample_dist = "constant"
+    config.cond.temperature.dist_params = [64.0]
 
     trial = ToySimilarityTrainer(config)
     trial.run()

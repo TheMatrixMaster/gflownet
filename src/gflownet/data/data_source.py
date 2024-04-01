@@ -247,9 +247,18 @@ class DataSource(IterableDataset):
         valid_idcs = valid_idcs[m_is_valid]
         all_fr = torch.zeros((len(trajs), flat_rewards.shape[1]))
         all_fr[valid_idcs] = flat_rewards
+
+        # Get number of atoms and bonds per mol obj
+        # TODO: move to a sampling hook
+        n_atoms = torch.tensor([m.GetNumAtoms() for m in objs], dtype=torch.float32)
+        n_bonds = torch.tensor([m.GetNumBonds() for m in objs], dtype=torch.float32)
+
         for i in range(len(trajs)):
             trajs[i]["flat_rewards"] = all_fr[i]
             trajs[i]["is_online"] = mark_as_online
+            trajs[i]["n_atoms"] = n_atoms[i]
+            trajs[i]["n_bonds"] = n_bonds[i]
+
         # Override the is_valid key in case the task made some objs invalid
         for i in valid_idcs:
             trajs[i]["is_valid"] = True

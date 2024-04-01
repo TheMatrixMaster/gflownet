@@ -516,10 +516,13 @@ class TrajectoryBalance(GFNAlgorithm):
             reward_loss = 0
 
         loss = traj_losses.mean() + reward_loss
+
         info = {
             "offline_loss": traj_losses[: batch.num_offline].mean() if batch.num_offline > 0 else 0,
             "online_loss": traj_losses[batch.num_offline :].mean() if batch.num_online > 0 else 0,
             "reward_loss": reward_loss,
+            "avg_number_of_nodes": np.mean([x.num_nodes for x in batch[final_graph_idx]]),
+            "avg_number_of_edges": np.mean([x.num_edges for x in batch[final_graph_idx]]),
             "invalid_trajectories": invalid_mask.sum() / batch.num_online if batch.num_online > 0 else 0,
             "invalid_logprob": (invalid_mask * traj_log_p_F).sum() / (invalid_mask.sum() + 1e-4),
             "invalid_losses": (invalid_mask * traj_losses).sum() / (invalid_mask.sum() + 1e-4),

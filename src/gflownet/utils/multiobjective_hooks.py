@@ -269,7 +269,7 @@ class RewardPercentilesHook:
 
 class TrajectoryLengthHook:
     """
-    Report the average trajectory length.
+    Report the average trajectory length along with number of atoms and bonds
     """
 
     def __init__(self) -> None:
@@ -278,4 +278,21 @@ class TrajectoryLengthHook:
     def __call__(self, trajs, rewards, flat_rewards, cond_info):
         ret = {}
         ret["sample_len"] = sum([len(i["traj"]) for i in trajs]) / len(trajs)
+        return ret
+
+
+class AtomicPropertiesHook:
+    """
+    Report the average atomic properties along with number of atoms and bonds
+    """
+
+    def __init__(self) -> None:
+        pass
+
+    def __call__(self, trajs, rewards, flat_rewards, cond_info):
+        ret = {}
+        ret["avg_number_atoms"] = sum([i["n_atoms"] for i in trajs]) / len(trajs)
+        ret["avg_number_bonds"] = sum([i["n_bonds"] for i in trajs]) / len(trajs)
+        ret["avg_trajectory_length"] = sum([len(i["traj"]) for i in trajs]) / len(trajs)
+        ret["max_trajectory_length"] = max([len(i["traj"]) for i in trajs])
         return ret
