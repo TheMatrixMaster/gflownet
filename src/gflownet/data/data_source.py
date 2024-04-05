@@ -248,20 +248,15 @@ class DataSource(IterableDataset):
         all_fr = torch.zeros((len(trajs), flat_rewards.shape[1]))
         all_fr[valid_idcs] = flat_rewards
 
-        # Get number of atoms and bonds per mol obj
-        # TODO: move to a sampling hook
-        n_atoms = torch.tensor([m.GetNumAtoms() for m in objs], dtype=torch.float32)
-        n_bonds = torch.tensor([m.GetNumBonds() for m in objs], dtype=torch.float32)
-
         for i in range(len(trajs)):
             trajs[i]["flat_rewards"] = all_fr[i]
             trajs[i]["is_online"] = mark_as_online
-            trajs[i]["n_atoms"] = n_atoms[i]
-            trajs[i]["n_bonds"] = n_bonds[i]
+            trajs[i]["mol"] = None
 
         # Override the is_valid key in case the task made some objs invalid
         for i in valid_idcs:
             trajs[i]["is_valid"] = True
+            trajs[i]["mol"] = objs[i]
 
     def compute_log_rewards(self, trajs):
         """Sets trajs' log_reward key by querying the task."""

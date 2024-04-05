@@ -1,6 +1,8 @@
 import socket
 from typing import Callable, Dict, List, Tuple, Union
 
+import random
+import wandb
 import pickle
 import numpy as np
 import torch
@@ -18,7 +20,13 @@ from gflownet.online_trainer import StandardOnlineTrainer
 from gflownet.utils.conditioning import TemperatureConditional
 from gflownet.utils.misc import get_worker_device
 from gflownet.utils.transforms import to_logreward
-from gflownet.utils.multiobjective_hooks import AtomicPropertiesHook
+from gflownet.utils.multiobjective_hooks import (
+    AtomicPropertiesHook,
+    RewardPercentilesHook,
+    NumberOfModesHook,
+    SnapshotDistributionHook,
+    NumberOfUniqueTrajectoriesHook,
+)
 
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -165,8 +173,65 @@ class MorphSimilarityTrainer(StandardOnlineTrainer):
         )
 
     def setup(self):
+        # Creates the following sampling hooks:
+        #
+        # - Throughout training, saves the molecules with reward higher than a certain threshold
+        #   (could be top-k percentile or a fixed threshold) and plot the number of unique modes
+        #   where a mode is a new molecule with high reward whose tanimoto similarity with all
+        #   the previous modes is below a certain threshold.
         super().setup()
         self.sampling_hooks.append(AtomicPropertiesHook())
+        self.sampling_hooks.append(RewardPercentilesHook())
+        self.sampling_hooks.append(NumberOfUniqueTrajectoriesHook())
+
+        self._num_modes_hooks = [
+            NumberOfModesHook(reward_mode="hard", reward_threshold=0.7, sim_threshold=0.7),
+            NumberOfModesHook(reward_mode="hard", reward_threshold=0.8, sim_threshold=0.7),
+            NumberOfModesHook(reward_mode="hard", reward_threshold=0.9, sim_threshold=0.7),
+        ]
+        self.sampling_hooks.extend(self._num_modes_hooks)
+
+        self._snapshot_dist_hook = SnapshotDistributionHook()
+        self.valid_sampling_hooks.append(self._snapshot_dist_hook)
+
+    def build_callbacks(self):
+        # Creates the following callback classes that implement `on_validation_end(self, metrics: Dict[str, Any])`:
+        #
+        # - Samples X new trajectories during validation, keep the top-k molecules with the highest
+        #   reward and plot a histogram of the tanimoto similarity between the top-k molecules and
+        #   the target molecule.
+        #
+        # - Samples X new trajectories during validation and plot their reward distribution
+        #
+        # - Uses the high reward molecules saved during training, plot the top k molecules with
+        #   highest reward that have different Murcko scaffolds
+        parent = self
+        callback_dict = {}
+
+        class NumModesCallback:
+            def on_validation_end(self, metrics):
+                for hook in parent._num_modes_hooks:
+                    modes_by_scaffold = hook.split_by_scaffold()
+                    num_to_plot = min(10, len(modes_by_scaffold))
+                    scaffolds = random.sample(list(modes_by_scaffold.keys()), num_to_plot)
+                    for scaffold in scaffolds:
+                        mol, top_rew = modes_by_scaffold[scaffold][0]
+                        fig, ax = mmc.plot_mol(mol)
+                        metrics[f"reward: {top_rew}, scaffold: {scaffold}"] = wandb.Image(fig)
+                        fig.clear()
+
+        class SnapshotDistCallback:
+            def on_validation_end(self, metrics):
+                reward_fig = parent._snapshot_dist_hook.plot_reward_distribution()
+                top_k_sim_fig = parent._snapshot_dist_hook.plot_top_k_tanimoto_similarity()
+                metrics["reward_dist"] = wandb.Image(reward_fig)
+                metrics["top_k_similarity_dist"] = wandb.Image(top_k_sim_fig)
+                reward_fig.clear()
+                top_k_sim_fig.clear()
+
+        callback_dict["num_modes"] = NumModesCallback()
+        callback_dict["snapshot_dist"] = SnapshotDistCallback()
+        return callback_dict
 
 
 def main():
@@ -177,21 +242,29 @@ def main():
     config.device = "cuda" if torch.cuda.is_available() else "cpu"
     config.overwrite_existing_exp = True
     config.pickle_mp_messages = True
-    config.num_training_steps = 5000
-    config.validate_every = 0
+    config.num_training_steps = 1000
+    config.validate_every = 5
     config.num_validation_gen_steps = 0
-    config.num_final_gen_steps = 0
-    config.num_workers = 8
+    config.num_final_gen_steps = 1000
+    config.num_workers = 0
     config.opt.lr_decay = 20_000
     config.algo.sampling_tau = 0.95
-    config.algo.max_nodes = 9
+    config.algo.max_nodes = 7
     config.algo.train_random_action_prob = 0.01
     config.cond.temperature.sample_dist = "constant"
     config.cond.temperature.dist_params = [64.0]
     config.cond.temperature.num_thermometer_dim = 1
 
+    config.replay.use = False
+    config.replay.capacity = 1000
+    config.replay.warmup = 100
+
+    config.algo.num_from_policy = 64
+    config.replay.num_from_replay = 32
+    config.replay.num_new_samples = 32
+
     config.task.morph_sim.target_path = "/home/mila/s/stephen.lu/gfn_gene/res/mmc/sample_0.pkl"
-    config.task.morph_sim.proxy_path = "/home/mila/s/stephen.lu/gfn_gene/res/mmc/morph_struct.ckpt"
+    config.task.morph_sim.proxy_path = "/home/mila/s/stephen.lu/gfn_gene/res/mmc/morph_struct_90_step_val_loss.ckpt"
     config.task.morph_sim.config_dir = "/home/mila/s/stephen.lu/gfn_gene/multimodal_contrastive/configs"
     config.task.morph_sim.config_name = "puma_sm_gmc.yaml"
     config.task.morph_sim.reduced_frag = False

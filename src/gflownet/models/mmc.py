@@ -7,6 +7,7 @@ from rdkit import Chem
 from rdkit.Chem import Draw
 from rdkit.Chem.rdchem import Mol as RDMol
 
+from collections import defaultdict
 from typing import Optional
 from torch.nn import Module
 from pytorch_lightning import LightningModule
@@ -34,11 +35,15 @@ class MMC_Proxy(Module):
         model = model.load_from_checkpoint(ckpt_path, map_location=worker)
         model = model.to(worker)
         self.model = model.eval()
+        self.cache = defaultdict(float)
 
         # TODO make optional and load from arg path
         self.latents = np.load("/home/mila/s/stephen.lu/gfn_gene/res/mmc/puma_embeddings.npz")
 
     def log_target_properties(self, target, target_latent, mode="joint"):
+        if not wandb.run:
+            return
+
         fig, ax = plt.subplots(figsize=(5, 5))
 
         # compute cosine similarity between target modality and all struct latents
@@ -46,29 +51,22 @@ class MMC_Proxy(Module):
         ax.hist(cosine_sim.flatten(), bins=50)
         ax.set_title(f"Cosine similarity to target")
 
-        if mode == "joint":
+        wandb.log({"Target properties": wandb.Image(fig)})
+
+        if "struct" in target["inputs"]:
             mol = Chem.MolFromSmiles(bytes(target["inputs"]["struct"].mols))
             num_atoms = mol.GetNumAtoms()
             num_bonds = mol.GetNumBonds()
 
             # plot the target molecule
-            fig2, ax2 = plt.subplots(figsize=(5, 5))
-            img = Draw.MolToImage(mol)
-            ax2.imshow(img)
-            ax2.axis("off")
-
+            fig2, ax2 = plot_mol(mol)
             print(f"Target num atoms: {num_atoms}, Target num bonds: {num_bonds}")
 
-        if not wandb.run:
-            plt.clf()               
-            return
-
-        wandb.log({"Target properties": wandb.Image(fig)})
-
-        if mode == "joint":
             wandb.log(
                 {"Target num atoms": num_atoms, "Target num bonds": num_bonds, "Target molecule": wandb.Image(fig2)}
             )
+
+        plt.clf()
 
     def get_model(self, wrap_model_fn=None):
         if wrap_model_fn is None:
@@ -111,3 +109,17 @@ def to_device(x_dict, device=None):
 
 def mol2graph(mol: RDMol):
     return mol_to_data(mol, mode="mol")
+
+
+def plot_mol(mol: RDMol):
+    num_atoms = mol.GetNumAtoms()
+    num_bonds = mol.GetNumBonds()
+
+    # plot the target molecule
+    fig, ax = plt.subplots(figsize=(5, 5))
+    ax.set_title(f"Num atoms: {num_atoms}, Num bonds: {num_bonds}")
+    img = Draw.MolToImage(mol)
+    ax.imshow(img)
+    ax.axis("off")
+
+    return fig, ax

@@ -23,8 +23,15 @@ class ReplayBuffer(object):
             assert self._input_size == len(args), "ReplayBuffer input size must be constant"
         if len(self.buffer) < self.capacity:
             self.buffer.append(None)
+
+        tmp = self.buffer[self.position]
+        self.buffer[self.position] = None
+        del tmp  # Manually delete
         self.buffer[self.position] = args
         self.position = (self.position + 1) % self.capacity
+
+        # TODO: Check what is being stored in buffer
+        # TODO: Modify replay buffer to not store any actual data (just make a dummy buffer)
 
     def sample(self, batch_size):
         idxs = self.rng.choice(len(self.buffer), batch_size)

@@ -522,6 +522,7 @@ class Normalizer(object):
         return self.scale * arr + self.loc
 
 
+# Use this for computing modes
 def all_are_tanimoto_different(thresh, fp, mode_fps, delta=16):
     """
     Equivalent to `all(DataStructs.BulkTanimotoSimilarity(fp, mode_fps) < thresh)` but much faster.
