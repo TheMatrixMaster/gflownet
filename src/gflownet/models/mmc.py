@@ -24,7 +24,6 @@ OmegaConf.register_new_resolver("sum", lambda input_list: np.sum(input_list))
 
 class MMC_Proxy(Module):
     model: Optional[Module]
-    latents: Optional[np.ndarray]
     wrap_for_mp: bool = False
 
     def __init__(self, cfg_name: str, cfg_dir: str, ckpt_path: str, worker: str):
@@ -37,24 +36,12 @@ class MMC_Proxy(Module):
         self.model = model.eval()
         self.cache = defaultdict(float)
 
-        # TODO make optional and load from arg path
-        self.latents = np.load("/home/mila/s/stephen.lu/gfn_gene/res/mmc/puma_embeddings.npz")
-
-    def log_target_properties(self, target, target_latent, mode="joint"):
+    def log_target_properties(self, target_mol, target_latent, mode="joint"):
         if not wandb.run:
             return
 
-        fig, ax = plt.subplots(figsize=(5, 5))
-
-        # compute cosine similarity between target modality and all struct latents
-        cosine_sim = cosine_similarity(target_latent, self.latents["struct"])
-        ax.hist(cosine_sim.flatten(), bins=50)
-        ax.set_title(f"Cosine similarity to target")
-
-        wandb.log({"Target properties": wandb.Image(fig)})
-
-        if "struct" in target["inputs"]:
-            mol = Chem.MolFromSmiles(bytes(target["inputs"]["struct"].mols))
+        if target_mol:
+            mol = target_mol
             num_atoms = mol.GetNumAtoms()
             num_bonds = mol.GetNumBonds()
 

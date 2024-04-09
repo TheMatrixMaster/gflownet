@@ -344,6 +344,18 @@ class SnapshotDistributionHook:
         ax.set_ylabel("Density")
         return fig
 
+    def plot_tanimoto_similarity_to_target(self, target_mol):
+        target_fp = self.fpgen.GetCountFingerprint(target_mol)
+        fps = [self.fpgen.GetCountFingerprint(i[0]) for i in self.mols]
+        tanimoto_sim = AllChem.DataStructs.BulkTanimotoSimilarity(target_fp, fps)
+
+        fig, ax = plt.subplots()
+        ax.hist(tanimoto_sim, bins=50)
+        ax.set_title("Tanimoto Similarity to Target")
+        ax.set_xlabel("Tanimoto Similarity")
+        ax.set_ylabel("Density")
+        return fig
+
     def __call__(self, trajs, rewards, flat_rewards, cond_info):
         for traj, reward in zip(trajs, rewards):
             mol = traj["mol"]
