@@ -11,11 +11,12 @@ import torch_geometric.data as gd
 from rdkit import Chem
 from rdkit.Chem.rdchem import Mol as RDMol
 from torch import Tensor
+from torch.utils.data import Dataset
 from torch_geometric.data import Data
 
 from gflownet import FlatRewards, GFNTask, RewardScalar
 from gflownet.config import Config, init_empty
-from gflownet.envs.frag_mol_env import FragMolBuildingEnvContext
+from gflownet.envs.frag_mol_env import FragMolBuildingEnvContext, Graph
 from gflownet.models import bengio2021flow, mmc
 from gflownet.online_trainer import StandardOnlineTrainer
 from gflownet.utils.conditioning import TemperatureConditional
@@ -33,6 +34,32 @@ import matplotlib.pyplot as plt
 from sklearn.metrics.pairwise import cosine_similarity
 
 
+class TargetDataset(Dataset):
+    """Note: this dataset isn't used by default, but turning it on showcases some features of this codebase.
+
+    To turn on, self `cfg.algo.num_from_dataset > 0`"""
+
+    def __init__(self, smis) -> None:
+        super().__init__()
+        self.props: List[Tensor] = []
+        self.mols: List[Graph] = []
+        self.smis = smis
+
+    def set_smis(self, smis):
+        self.smis = smis
+
+    def setup(self, task, ctx):
+        rdmols = [Chem.MolFromSmiles(i) for i in self.smis]
+        self.mols = [ctx.mol_to_graph(i) for i in rdmols]
+        self.props = task.compute_flat_rewards(rdmols)[0]
+
+    def __len__(self):
+        return len(self.mols)
+
+    def __getitem__(self, index):
+        return self.mols[index], self.props[index]
+
+
 class MorphSimilarityTask(GFNTask):
     """Sets up a task where the reward is computed using the cosine distance between the latent
     morphology representation of a target molecule and the latent representation of a generated molecule
@@ -41,6 +68,7 @@ class MorphSimilarityTask(GFNTask):
     def __init__(
         self,
         raw_target,
+        dataset: TargetDataset,
         cfg: Config,
         rng: np.random.Generator = None,
         wrap_model: Callable[[nn.Module], nn.Module] = None,
@@ -53,6 +81,8 @@ class MorphSimilarityTask(GFNTask):
         self.target_mol = None
         if "struct" in raw_target["inputs"]:
             self.target_mol = Chem.MolFromSmiles(bytes(raw_target["inputs"]["struct"].mols))
+            self.dataset = dataset
+            self.dataset.set_smis([bytes(raw_target["inputs"]["struct"].mols)] * cfg.algo.num_from_dataset)
 
         self.target = self._setup_target_representation(raw_target)
         self.mmc_proxy.log_target_properties(self.target_mol, self.target, mode=self.cfg.task.morph_sim.target_mode)
@@ -119,9 +149,18 @@ class MorphSimilarityTask(GFNTask):
         assert len(preds) == is_valid.sum()
         return FlatRewards(preds), is_valid
 
+    def get_model_latents(self, mols: List[RDMol]) -> Tensor:
+        graphs = [mmc.mol2graph(i) for i in mols]
+        batch = gd.Batch.from_data_list([i for i in graphs if i is not None])
+        batch.to(self.models["mmc"].device if hasattr(self.models["mmc"], "device") else get_worker_device())
+        inputs = {"inputs": {"struct": batch}}
+        preds = self.models["mmc"](inputs, mod_name="struct").data.cpu().detach().numpy()
+        return preds
+
 
 class MorphSimilarityTrainer(StandardOnlineTrainer):
     task: MorphSimilarityTask
+    training_data: TargetDataset
 
     def set_default_hps(self, cfg: Config):
         cfg.hostname = socket.gethostname()
@@ -166,10 +205,15 @@ class MorphSimilarityTrainer(StandardOnlineTrainer):
 
         self.task = MorphSimilarityTask(
             raw_target=target,
+            dataset=self.training_data,
             cfg=self.cfg,
             rng=self.rng,
             wrap_model=self._wrap_for_mp,
         )
+
+    def setup_data(self):
+        super().setup_data()
+        self.training_data = TargetDataset([])
 
     def setup_env_context(self):
         self.ctx = FragMolBuildingEnvContext(
@@ -181,14 +225,18 @@ class MorphSimilarityTrainer(StandardOnlineTrainer):
 
     def setup(self):
         super().setup()
+        self.training_data.setup(self.task, self.ctx)
+
         self.sampling_hooks.append(AtomicPropertiesHook())
         self.sampling_hooks.append(RewardPercentilesHook())
         self.sampling_hooks.append(NumberOfUniqueTrajectoriesHook())
 
         self._num_modes_hooks = [
-            NumberOfModesHook(reward_mode="hard", reward_threshold=0.85, sim_threshold=0.7),
+            # NumberOfModesHook(reward_mode="hard", reward_threshold=0.85, sim_threshold=0.7),
             NumberOfModesHook(reward_mode="hard", reward_threshold=0.9, sim_threshold=0.7),
+            NumberOfModesHook(reward_mode="hard", reward_threshold=0.925, sim_threshold=0.7),
             NumberOfModesHook(reward_mode="hard", reward_threshold=0.95, sim_threshold=0.7),
+            # NumberOfModesHook(reward_mode="hard", reward_threshold=0.975, sim_threshold=0.7),
         ]
         self.sampling_hooks.extend(self._num_modes_hooks)
 
@@ -252,27 +300,32 @@ def main():
     config.overwrite_existing_exp = True
     config.pickle_mp_messages = True
     config.num_training_steps = 1000
-    config.validate_every = 10
+    config.validate_every = 0
     config.num_validation_gen_steps = 0
     config.num_final_gen_steps = 1000
     config.num_workers = 0
     config.opt.lr_decay = 20_000
     config.algo.sampling_tau = 0.95
-    config.algo.max_nodes = 9
+
+    config.algo.method = "RND"
+    config.algo.max_nodes = 8
     config.algo.train_random_action_prob = 0.01
     config.cond.temperature.sample_dist = "constant"
-    config.cond.temperature.dist_params = [64.0]
+    config.cond.temperature.dist_params = [256.0]
     config.cond.temperature.num_thermometer_dim = 1
+
+    config.algo.num_from_policy = 64
+    config.algo.num_from_dataset = 0
+    config.algo.valid_num_from_policy = 64
+    config.algo.valid_num_from_dataset = 0
 
     config.replay.use = False
     config.replay.capacity = 1000
     config.replay.warmup = 100
-
-    config.algo.num_from_policy = 64
     config.replay.num_from_replay = 32
     config.replay.num_new_samples = 32
 
-    config.task.morph_sim.target_path = "/home/mila/s/stephen.lu/gfn_gene/res/mmc/targets/sample_92.pkl"
+    config.task.morph_sim.target_path = "/home/mila/s/stephen.lu/gfn_gene/res/mmc/targets/sample_67.pkl"
     config.task.morph_sim.proxy_path = (
         "/home/mila/s/stephen.lu/gfn_gene/res/mmc/models/morph_struct_90_step_val_loss.ckpt"
     )

@@ -8,6 +8,7 @@ from omegaconf import OmegaConf
 from torch import Tensor
 
 from gflownet.algo.advantage_actor_critic import A2C
+from gflownet.algo.random_sampling import RandomSampling
 from gflownet.algo.flow_matching import FlowMatching
 from gflownet.algo.soft_q_learning import SoftQLearning
 from gflownet.algo.trajectory_balance import TrajectoryBalance
@@ -22,7 +23,10 @@ def model_grad_norm(model):
     for i in model.parameters():
         if i.grad is not None:
             x += (i.grad * i.grad).sum()
-    return torch.sqrt(x)
+    if x == 0:
+        return torch.tensor(0.0)
+    else:
+        return torch.sqrt(x)
 
 
 class StandardOnlineTrainer(GFNTrainer):
@@ -44,6 +48,8 @@ class StandardOnlineTrainer(GFNTrainer):
             algo = A2C
         elif algo == "SQL":
             algo = SoftQLearning
+        elif algo == "RND":
+            algo = RandomSampling
         else:
             raise ValueError(algo)
         self.algo = algo(self.env, self.ctx, self.rng, self.cfg)

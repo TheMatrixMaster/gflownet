@@ -375,6 +375,7 @@ class NumberOfModesHook:
 
     reward_mode: str  # "hard" or "percentile"
     reward_threshold: List[int]  # list of reward thresholds to log
+    stop_logging_after: int  # number of modes after which to stop logging
 
     def __init__(self, reward_mode="hard", reward_threshold=[0.7], sim_threshold=0.7) -> None:
         self.sim_threshold = sim_threshold
@@ -382,6 +383,7 @@ class NumberOfModesHook:
         self.reward_threshold = reward_threshold
         self.modes = []
         self.mode_fps = []
+        self.stop_logging_after = 2000
         self.fpgen = AllChem.GetMorganGenerator(radius=2, fpSize=2048)
 
         assert self.reward_mode in ["hard", "percentile"]
@@ -389,6 +391,9 @@ class NumberOfModesHook:
             raise NotImplemented
 
     def __call__(self, trajs, rewards, flat_rewards, cond_info):
+        if self.should_stop_logging():
+            return {}
+
         for traj, reward in zip(trajs, rewards):
             mol = traj["mol"]
             if mol is None or reward < self.reward_threshold:
@@ -400,6 +405,11 @@ class NumberOfModesHook:
                 self.mode_fps.append(fp)
 
         return {f"{self.__label__()}": len(self.modes)}
+
+    def should_stop_logging(self):
+        if self.stop_logging_after is None:
+            return False
+        return len(self.modes) >= self.stop_logging_after
 
     def split_by_scaffold(self):
         """Splits the modes by scaffold then sorts by descending reward"""
