@@ -66,6 +66,11 @@ class SEHTask(GFNTask):
     def compute_reward_from_graph(self, graphs: List[Data]) -> Tensor:
         batch = gd.Batch.from_data_list([i for i in graphs if i is not None])
         batch.to(self.models["seh"].device if hasattr(self.models["seh"], "device") else get_worker_device())
+
+        print(batch.is_cuda)
+        print(get_worker_device())
+        print(self.models["seh"])
+
         preds = self.models["seh"](batch).reshape((-1,)).data.cpu()
         preds[preds.isnan()] = 0
         return self.flat_reward_transform(preds).clip(1e-4, 100).reshape((-1,))
@@ -208,7 +213,8 @@ def main():
     config.log_dir = f"./logs/debug_run_seh_frag_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
     config.device = "cuda" if torch.cuda.is_available() else "cpu"
     config.overwrite_existing_exp = True
-    config.num_training_steps = 1_00
+    config.pickle_mp_messages = True
+    config.num_training_steps = 1000
     config.validate_every = 20
     config.num_final_gen_steps = 10
     config.num_workers = 1
@@ -216,6 +222,7 @@ def main():
     config.algo.sampling_tau = 0.99
     config.cond.temperature.sample_dist = "uniform"
     config.cond.temperature.dist_params = [0, 64.0]
+    config.replay.use = False
 
     trial = SEHFragTrainer(config)
     trial.run()

@@ -248,12 +248,16 @@ class DataSource(IterableDataset):
         valid_idcs = valid_idcs[m_is_valid]
         all_fr = torch.zeros((len(trajs), flat_rewards.shape[1]))
         all_fr[valid_idcs] = flat_rewards
+
         for i in range(len(trajs)):
             trajs[i]["flat_rewards"] = all_fr[i]
             trajs[i]["is_online"] = mark_as_online
+            trajs[i]["mol"] = None
+
         # Override the is_valid key in case the task made some objs invalid
         for i in valid_idcs:
             trajs[i]["is_valid"] = True
+            trajs[i]["mol"] = objs[i]
 
     def compute_log_rewards(self, trajs):
         """Sets trajs' log_reward key by querying the task."""

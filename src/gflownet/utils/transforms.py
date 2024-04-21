@@ -3,7 +3,8 @@ from torch import Tensor
 
 
 def to_logreward(reward: Tensor) -> Tensor:
-    return reward.squeeze().clamp(min=1e-30).log()
+    dims = list(range(1, reward.ndim))
+    return reward.squeeze(dim=dims).clamp(min=1e-30).log()
 
 
 def thermometer(v: Tensor, n_bins: int = 50, vmin: float = 0, vmax: float = 1) -> Tensor:

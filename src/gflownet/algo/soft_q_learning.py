@@ -5,13 +5,14 @@ import torch_geometric.data as gd
 from torch import Tensor
 from torch_scatter import scatter
 
+from gflownet.trainer import GFNAlgorithm
 from gflownet.algo.graph_sampling import GraphSampler
 from gflownet.config import Config
 from gflownet.envs.graph_building_env import GraphBuildingEnv, GraphBuildingEnvContext, generate_forward_trajectory
 from gflownet.utils.misc import get_worker_device
 
 
-class SoftQLearning:
+class SoftQLearning(GFNAlgorithm):
     def __init__(
         self,
         env: GraphBuildingEnv,
@@ -40,6 +41,7 @@ class SoftQLearning:
         self.ctx = ctx
         self.env = env
         self.rng = rng
+        self.global_cfg = cfg
         self.max_len = cfg.algo.max_len
         self.max_nodes = cfg.algo.max_nodes
         self.illegal_action_logreward = cfg.algo.illegal_action_logreward
@@ -51,6 +53,9 @@ class SoftQLearning:
         self.sample_temp = 1
         self.do_q_prime_correction = False
         self.graph_sampler = GraphSampler(ctx, env, self.max_len, self.max_nodes, rng, self.sample_temp)
+
+    def set_is_eval(self, is_eval: bool):
+        self.is_eval = is_eval
 
     def create_training_data_from_own_samples(
         self, model: nn.Module, n: int, cond_info: Tensor, random_action_prob: float

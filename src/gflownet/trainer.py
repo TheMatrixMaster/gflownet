@@ -69,7 +69,7 @@ class GFNTrainer:
             config, Config
         )  # make sure the config is a Config object, and not the Config class itself
         self.cfg: Config = OmegaConf.merge(self.default_cfg, config)
-        
+
         self.device = torch.device(self.cfg.device)
         set_main_process_device(self.device)
         # Print the loss every `self.print_every` iterations
@@ -270,10 +270,10 @@ class GFNTrainer:
         for it, batch in zip(range(start, 1 + num_training_steps), cycle(train_dl)):
             # the memory fragmentation or allocation keeps growing, how often should we clean up?
             # is changing the allocation strategy helpful?
-
             if it % 1024 == 0:
                 gc.collect()
                 torch.cuda.empty_cache()
+
             epoch_idx = it // epoch_length
             batch_idx = it % epoch_length
             if self.replay_buffer is not None and len(self.replay_buffer) < self.replay_buffer.warmup:
@@ -359,6 +359,9 @@ class GFNTrainer:
         if not hasattr(self, "_summary_writer"):
             self._summary_writer = torch.utils.tensorboard.SummaryWriter(self.cfg.log_dir)
         for k, v in info.items():
+            # don't log wandb.Image instances
+            if isinstance(v, wandb.Image):
+                continue
             self._summary_writer.add_scalar(f"{key}_{k}", v, index)
         if wandb.run is not None:
             wandb.log({f"{key}_{k}": v for k, v in info.items()}, step=index)

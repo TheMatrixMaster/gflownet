@@ -99,8 +99,11 @@ class MPObjectProxy:
         self.obj = obj
         if hasattr(obj, "parameters"):
             self.device = next(obj.parameters()).device
+        elif hasattr(obj, "device"):
+            self.device = obj.device
         else:
             self.device = torch.device("cpu")
+
         self.cuda_types = (torch.Tensor,) + cast_types
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self.run, daemon=True)

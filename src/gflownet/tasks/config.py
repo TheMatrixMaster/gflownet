@@ -63,8 +63,19 @@ class QM9MOOTaskConfig(StrictDataClass):
 
 
 @dataclass
+class MorphSimTaskConfig:
+    target_path: str = "./data/morph/morph_target.npy"
+    proxy_path: str = "./data/morph/morph_proxy.pt"
+    config_dir: str = "./data/morph/configs"
+    config_name: str = "puma_sm_gmc.yaml"
+    target_mode: str = "morph"  # "morph" or "joint"
+    reduced_frag: bool = False
+
+
+@dataclass
 class TasksConfig(StrictDataClass):
     qm9: QM9TaskConfig = field(default_factory=QM9TaskConfig)
     qm9_moo: QM9MOOTaskConfig = field(default_factory=QM9MOOTaskConfig)
     seh: SEHTaskConfig = field(default_factory=SEHTaskConfig)
     seh_moo: SEHMOOTaskConfig = field(default_factory=SEHMOOTaskConfig)
+    morph_sim: MorphSimTaskConfig = field(default_factory=MorphSimTaskConfig)

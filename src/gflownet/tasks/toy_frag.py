@@ -47,10 +47,10 @@ class ToySimilarityTask(GFNTask):
         self.num_cond_dim = self.temperature_conditional.encoding_size()
 
     def flat_reward_transform(self, y: Union[float, Tensor]) -> FlatRewards:
-        return FlatRewards(torch.as_tensor(y) / 1)
+        return FlatRewards(torch.as_tensor(y) / 4)
 
     def inverse_flat_reward_transform(self, rp):
-        return rp * 1
+        return rp * 4
 
     def _load_task_models(self):
         return {}
@@ -71,7 +71,7 @@ class ToySimilarityTask(GFNTask):
         naive reward directly in the molecule space
         """
         fps = [self.fpgen.GetSparseCountFingerprint(m) for m in mols]
-        is_valid = np.array([fp is not None for fp in fps])
+        is_valid = torch.tensor([fp is not None for fp in fps]).bool()
         if not is_valid.any():
             return FlatRewards(torch.zeros((0, 1))), is_valid
 
@@ -146,11 +146,11 @@ def main():
     config.validate_every = 0
     config.num_validation_gen_steps = 0
     config.num_final_gen_steps = 0
-    config.num_workers = 0
+    config.num_workers = 8
     config.opt.lr_decay = 20_000
     config.algo.sampling_tau = 0.99
-    config.cond.temperature.sample_dist = "uniform"
-    config.cond.temperature.dist_params = [0, 64.0]
+    config.cond.temperature.sample_dist = "constant"
+    config.cond.temperature.dist_params = [64.0]
 
     trial = ToySimilarityTrainer(config)
     trial.run()

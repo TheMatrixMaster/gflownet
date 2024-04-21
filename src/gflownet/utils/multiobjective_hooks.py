@@ -6,11 +6,18 @@ from collections import defaultdict
 from typing import List
 
 import numpy as np
+from itertools import combinations
+import matplotlib.pyplot as plt
+
 import torch
 import torch.multiprocessing as mp
 from torch import Tensor
 
 from gflownet.utils import metrics
+
+from rdkit import Chem
+from rdkit.Chem import AllChem
+from rdkit.Chem.Scaffolds.MurckoScaffold import GetScaffoldForMol
 
 
 class MultiObjectiveStatsHook:
@@ -269,7 +276,7 @@ class RewardPercentilesHook:
 
 class TrajectoryLengthHook:
     """
-    Report the average trajectory length.
+    Report the average trajectory length along with number of atoms and bonds
     """
 
     def __init__(self) -> None:
@@ -277,5 +284,162 @@ class TrajectoryLengthHook:
 
     def __call__(self, trajs, rewards, flat_rewards, cond_info):
         ret = {}
-        ret["sample_len"] = sum([len(i["traj"]) for i in trajs]) / len(trajs)
+        ret["avg_traj_length"] = sum([len(i["traj"]) for i in trajs]) / len(trajs)
+        ret["max_traj_length"] = max([len(i["traj"]) for i in trajs])
         return ret
+
+
+class AtomicPropertiesHook:
+    """
+    Report the average atomic properties along with number of atoms and bonds
+    """
+
+    def __init__(self) -> None:
+        pass
+
+    def __call__(self, trajs, rewards, flat_rewards, cond_info):
+        ret = {}
+        mols = [i["mol"] for i in trajs if i["mol"] is not None]
+        n_atoms = torch.tensor([m.GetNumAtoms() for m in mols], dtype=torch.float32)
+        n_bonds = torch.tensor([m.GetNumBonds() for m in mols], dtype=torch.float32)
+        ret["avg_number_atoms"] = n_atoms.mean().item()
+        ret["avg_number_bonds"] = n_bonds.mean().item()
+        return ret
+
+
+class SnapshotDistributionHook:
+    """
+    Keeps a list of all the molecules sampled along with their rewards and
+    produces either a reward distribution plot or a tanimoto similarity plot
+
+    TODO: Support multiple workers by using a multiprocessing.Queue
+    """
+
+    def __init__(self) -> None:
+        self.mols = []
+        self.fpgen = AllChem.GetMorganGenerator(radius=2, fpSize=2048)
+
+    def plot_reward_distribution(self):
+        rewards = [i[1] for i in self.mols]
+        fig, ax = plt.subplots()
+        ax.hist(rewards, bins=50)
+        ax.set_xlabel("Reward")
+        ax.set_ylabel("Density")
+        return fig
+
+    def plot_top_k_tanimoto_similarity(self, k=64):
+        k = min(k, len(self.mols))
+        mols_sorted = sorted(self.mols, key=lambda x: x[1], reverse=True)
+        top_k_mols = [i[0] for i in mols_sorted[:k]]
+        top_k_fps = [self.fpgen.GetCountFingerprint(mol) for mol in top_k_mols]
+
+        tanimoto_sim = []
+        for i, j in combinations(top_k_fps, 2):
+            tanimoto_sim.append(AllChem.DataStructs.TanimotoSimilarity(i, j))
+
+        fig, ax = plt.subplots()
+        ax.hist(tanimoto_sim, bins=50)
+        ax.set_title(f"Top-{k} Tanimoto Similarity")
+        ax.set_xlabel("Tanimoto Similarity")
+        ax.set_ylabel("Density")
+        return fig
+
+    def plot_tanimoto_similarity_to_target(self, target_mol):
+        target_fp = self.fpgen.GetCountFingerprint(target_mol)
+        fps = [self.fpgen.GetCountFingerprint(i[0]) for i in self.mols]
+        tanimoto_sim = AllChem.DataStructs.BulkTanimotoSimilarity(target_fp, fps)
+
+        fig, ax = plt.subplots()
+        ax.hist(tanimoto_sim, bins=50)
+        ax.set_title("Tanimoto Similarity to Target")
+        ax.set_xlabel("Tanimoto Similarity")
+        ax.set_ylabel("Density")
+        return fig
+
+    def __call__(self, trajs, rewards, flat_rewards, cond_info):
+        for traj, reward in zip(trajs, rewards):
+            mol = traj["mol"]
+            if mol is not None:
+                self.mols.append((mol, reward))
+        return {}
+
+
+class NumberOfModesHook:
+    """
+    Keeps a list of the "modes" sampled along with their reward. A mode is defined as a
+    molecule whose Tanimoto similarity to any other molecule in the list is below a
+    certain threshold.
+
+    TODO: Support multiple workers by using a multiprocessing.Queue
+    """
+
+    reward_mode: str  # "hard" or "percentile"
+    reward_threshold: List[int]  # list of reward thresholds to log
+    stop_logging_after: int  # number of modes after which to stop logging
+
+    def __init__(self, reward_mode="hard", reward_threshold=[0.7], sim_threshold=0.7) -> None:
+        self.sim_threshold = sim_threshold
+        self.reward_mode = reward_mode
+        self.reward_threshold = reward_threshold
+        self.modes = []
+        self.mode_fps = []
+        self.stop_logging_after = 2000
+        self.fpgen = AllChem.GetMorganGenerator(radius=2, fpSize=2048)
+
+        assert self.reward_mode in ["hard", "percentile"]
+        if self.reward_mode == "percentile":
+            raise NotImplemented
+
+    def __call__(self, trajs, rewards, flat_rewards, cond_info):
+        if self.should_stop_logging():
+            return {}
+
+        for traj, reward in zip(trajs, rewards):
+            mol = traj["mol"]
+            if mol is None or reward < self.reward_threshold:
+                continue
+
+            fp = self.fpgen.GetCountFingerprint(mol)
+            if metrics.all_are_tanimoto_different(self.sim_threshold, fp, self.mode_fps):
+                self.modes.append((mol, reward))
+                self.mode_fps.append(fp)
+
+        return {f"{self.__label__()}": len(self.modes)}
+
+    def should_stop_logging(self):
+        if self.stop_logging_after is None:
+            return False
+        return len(self.modes) >= self.stop_logging_after
+
+    def split_by_scaffold(self):
+        """Splits the modes by scaffold then sorts by descending reward"""
+        scaffold_to_modes = defaultdict(list)
+        for mol, reward in self.modes:
+            scaffold = Chem.MolToSmiles(GetScaffoldForMol(mol))
+            scaffold_to_modes[scaffold].append((mol, reward))
+        scaffold_to_modes = {
+            scaffold: sorted(modes, key=lambda x: x[1], reverse=True) for scaffold, modes in scaffold_to_modes.items()
+        }
+        return scaffold_to_modes
+
+    def __label__(self):
+        if self.reward_mode == "hard":
+            return f"num_modes_>_{self.reward_threshold:.2f}"
+        elif self.reward_mode == "percentile":
+            return f"num_modes_>_{self.reward_threshold:.2f}_percentile"
+        else:
+            raise ValueError(f"Unknown reward_mode {self.reward_mode}")
+
+
+class NumberOfUniqueTrajectoriesHook:
+    """Counts the number of unique trajectories sampled over training"""
+
+    def __init__(self) -> None:
+        self.unique_trajs = set()
+
+    def __call__(self, trajs, rewards, flat_rewards, cond_info):
+        for traj in trajs:
+            mol = traj["mol"]
+            if mol is not None:
+                self.unique_trajs.add(Chem.MolToSmiles(mol))
+        return {"num_unique_trajs": len(self.unique_trajs)}
