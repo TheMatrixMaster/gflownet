@@ -26,6 +26,7 @@ from gflownet.utils.multiobjective_hooks import (
     AtomicPropertiesHook,
     RewardPercentilesHook,
     NumberOfModesHook,
+    NumberOfScaffoldsHook,
     SnapshotDistributionHook,
     NumberOfUniqueTrajectoriesHook,
 )
@@ -226,14 +227,13 @@ class MorphSimilarityTrainer(StandardOnlineTrainer):
 
         self.sampling_hooks.append(AtomicPropertiesHook())
         self.sampling_hooks.append(RewardPercentilesHook())
+        self.sampling_hooks.append(NumberOfScaffoldsHook())
         self.sampling_hooks.append(NumberOfUniqueTrajectoriesHook())
 
         self._num_modes_hooks = [
-            # NumberOfModesHook(reward_mode="hard", reward_threshold=0.85, sim_threshold=0.7),
-            NumberOfModesHook(reward_mode="hard", reward_threshold=0.9, sim_threshold=0.7),
-            NumberOfModesHook(reward_mode="hard", reward_threshold=0.925, sim_threshold=0.7),
-            NumberOfModesHook(reward_mode="hard", reward_threshold=0.95, sim_threshold=0.7),
-            # NumberOfModesHook(reward_mode="hard", reward_threshold=0.975, sim_threshold=0.7),
+            NumberOfModesHook(reward_mode="hard", reward_threshold=0.7, sim_thresholds=[0.7, 0.5, 0.2]),
+            NumberOfModesHook(reward_mode="hard", reward_threshold=0.8, sim_thresholds=[0.7, 0.5, 0.2]),
+            NumberOfModesHook(reward_mode="hard", reward_threshold=0.9, sim_thresholds=[0.7, 0.5, 0.2]),
         ]
         self.sampling_hooks.extend(self._num_modes_hooks)
 
@@ -304,11 +304,11 @@ def main():
     config.opt.lr_decay = 2000
     config.algo.sampling_tau = 0.99
 
-    config.algo.method = "SQL"
-    config.algo.max_nodes = 6
+    config.algo.method = "TB"
+    config.algo.max_nodes = 8
     config.algo.train_random_action_prob = 0.01
     config.cond.temperature.sample_dist = "constant"
-    config.cond.temperature.dist_params = [32.0]
+    config.cond.temperature.dist_params = [64.0]
     config.cond.temperature.num_thermometer_dim = 1
 
     config.algo.num_from_policy = 64
