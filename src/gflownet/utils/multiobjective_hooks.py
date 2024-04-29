@@ -406,6 +406,7 @@ class NumberOfModesHook:
         self.mode_fps = defaultdict(list)
         self.stop_logging_after = 2000
         self.fpgen = AllChem.GetRDKitFPGenerator()
+        self.simkeys = [self.get_key_from_sim(s) for s in sim_thresholds]
 
         assert self.reward_mode in ["hard", "percentile"]
         if self.reward_mode == "percentile":
@@ -413,6 +414,7 @@ class NumberOfModesHook:
 
     def __call__(self, trajs, rewards, flat_rewards, cond_info):
         res = {}
+        keys_to_update = set([k for k in self.simkeys if k in self.modes])
         for traj, reward in zip(trajs, rewards):
             mol = traj["mol"]
             if mol is None or reward < self.reward_threshold: continue
@@ -425,8 +427,11 @@ class NumberOfModesHook:
                 if metrics.all_are_tanimoto_different(sim_thresh, fp, self.mode_fps[simkey]):
                     self.modes[simkey].append((mol, reward))
                     self.mode_fps[simkey].append(fp)
+                    keys_to_update.add(simkey)
 
-                res[f"{self.__label__(sim_thresh)}"] = len(self.modes[simkey])
+        for k in keys_to_update:
+            res[f"{self.__label__(k)}"] = len(self.modes[k])
+            
         return res
 
     def should_stop_logging(self, sim_thresh: float):
@@ -448,10 +453,10 @@ class NumberOfModesHook:
 
     def get_key_from_sim(self, sim_thresh: float):
         assert sim_thresh != None
-        return f'sim<={sim_thresh}'
+        return f'sim<={sim_thresh:.2f}'
     
-    def __label__(self, sim_thresh: float):
-        return f"modes_>=_{self.reward_threshold:.2f}_sim_<=_{sim_thresh:.2f}"
+    def __label__(self, simkey: str):
+        return f"modes_>=_{self.reward_threshold:.2f}_{simkey}"
 
 
 class NumberOfUniqueTrajectoriesHook:
