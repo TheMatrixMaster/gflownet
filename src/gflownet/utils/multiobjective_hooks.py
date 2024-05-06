@@ -378,6 +378,34 @@ class NumberOfScaffoldsHook:
         return {"num_scaffolds": len(self.scaffolds)}
 
 
+
+class TopSimilarityToTargetHook:
+    """Keeps track of the molecule with the highest tanimoto similariy to the target"""
+    def __init__(self, target_mol) -> None:
+        self.fpgen = AllChem.GetRDKitFPGenerator()
+        self.target_fp = self.fpgen.GetFingerprint(target_mol)
+        self.top_sim = 0
+        self.top_mol = None
+
+    def __call__(self, trajs, rewards, flat_rewards, cond_info):
+        sims_to_target = []
+        for traj, reward in zip(trajs, rewards):
+            mol = traj["mol"]
+            if mol is not None:
+                fp = self.fpgen.GetFingerprint(mol)
+                sim = AllChem.DataStructs.TanimotoSimilarity(self.target_fp, fp)
+                sims_to_target.append(sim)
+                if sim > self.top_sim:
+                    self.top_sim = sim
+                    self.top_mol = mol
+
+        return {
+            "top_sim_to_target": self.top_sim,
+            "avg_sim_to_target": np.mean(sims_to_target),
+            "std_sim_to_target": np.std(sims_to_target),
+        }
+
+
 class NumberOfModesHook:
     """
     Keeps a list of the "modes" sampled along with their reward. A mode is defined as a

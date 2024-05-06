@@ -36,9 +36,23 @@ class MMC_Proxy(Module):
         self.model = model.eval()
         self.cache = defaultdict(float)
 
-    def log_target_properties(self, target_mol, target_latent, mode="joint"):
+    def log_target_properties(self, target_mol, struct_latent, morph_latent, joint_latent, mode="morph"):
+        struct_morph_sim = cosine_similarity(struct_latent, morph_latent)[0][0]
+        struct_joint_sim = cosine_similarity(struct_latent, joint_latent)[0][0]
+        morph_joint_sim = cosine_similarity(morph_latent, joint_latent)[0][0]
+
+        print("Cosine similarity struct~morph: ", struct_morph_sim)
+        print("Cosine similarity struct~joint: ", struct_joint_sim)
+        print("Cosine similarity morph~joint: ", morph_joint_sim)
+        
         if not wandb.run:
             return
+
+        wandb.log({
+            "Cosine similarity struct~morph": struct_morph_sim,
+            "Cosine similarity struct~joint": struct_joint_sim,
+            "Cosine similarity morph~joint": morph_joint_sim
+        })
 
         if target_mol:
             mol = target_mol
@@ -49,9 +63,11 @@ class MMC_Proxy(Module):
             fig2, ax2 = plot_mol(mol)
             print(f"Target num atoms: {num_atoms}, Target num bonds: {num_bonds}")
 
-            wandb.log(
-                {"Target num atoms": num_atoms, "Target num bonds": num_bonds, "Target molecule": wandb.Image(fig2)}
-            )
+            wandb.log({
+                "Target num atoms": num_atoms,
+                "Target num bonds": num_bonds,
+                "Target molecule": wandb.Image(fig2)
+            })
 
         plt.clf()
 
@@ -98,13 +114,18 @@ def mol2graph(mol: RDMol):
     return mol_to_data(mol, mode="mol")
 
 
-def plot_mol(mol: RDMol):
+def plot_mol(mol: RDMol, top_rew: float=None, scaffold: str=None):
     num_atoms = mol.GetNumAtoms()
     num_bonds = mol.GetNumBonds()
 
+    # make title
+    title = f"Num atoms: {num_atoms}, Num bonds: {num_bonds}"
+    if top_rew: title += f"\n Reward: {top_rew}"
+    if scaffold: title += f"\n Scaffold: {scaffold}"
+    
     # plot the target molecule
     fig, ax = plt.subplots(figsize=(5, 5))
-    ax.set_title(f"Num atoms: {num_atoms}, Num bonds: {num_bonds}")
+    ax.set_title(title)
     img = Draw.MolToImage(mol)
     ax.imshow(img)
     ax.axis("off")
