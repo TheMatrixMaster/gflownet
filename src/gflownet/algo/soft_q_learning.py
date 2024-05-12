@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 import torch.nn as nn
 import torch_geometric.data as gd
@@ -17,7 +16,6 @@ class SoftQLearning(GFNAlgorithm):
         self,
         env: GraphBuildingEnv,
         ctx: GraphBuildingEnvContext,
-        rng: np.random.RandomState,
         cfg: Config,
     ):
         """Soft Q-Learning implementation, see
@@ -33,14 +31,11 @@ class SoftQLearning(GFNAlgorithm):
             A graph environment.
         ctx: GraphBuildingEnvContext
             A context.
-        rng: np.random.RandomState
-            rng used to take random actions
         cfg: Config
             The experiment configuration
         """
         self.ctx = ctx
         self.env = env
-        self.rng = rng
         self.global_cfg = cfg
         self.max_len = cfg.algo.max_len
         self.max_nodes = cfg.algo.max_nodes
@@ -52,7 +47,7 @@ class SoftQLearning(GFNAlgorithm):
         # Experimental flags
         self.sample_temp = 1
         self.do_q_prime_correction = False
-        self.graph_sampler = GraphSampler(ctx, env, self.max_len, self.max_nodes, rng, self.sample_temp)
+        self.graph_sampler = GraphSampler(ctx, env, self.max_len, self.max_nodes, self.sample_temp)
 
     def set_is_eval(self, is_eval: bool):
         self.is_eval = is_eval
@@ -83,10 +78,16 @@ class SoftQLearning(GFNAlgorithm):
         """
         dev = get_worker_device()
         cond_info = cond_info.to(dev)
-        data = self.graph_sampler.sample_from_model(model, n, cond_info, dev, random_action_prob)
+        data = self.graph_sampler.sample_from_model(model, n, cond_info, random_action_prob)
         return data
 
-    def create_training_data_from_graphs(self, graphs):
+    def create_training_data_from_graphs(
+        self,
+        graphs,
+        model = None,
+        cond_info = None,
+        random_action_prob = None,
+    ):
         """Generate trajectories from known endpoints
 
         Parameters
@@ -99,7 +100,8 @@ class SoftQLearning(GFNAlgorithm):
         trajs: List[Dict{'traj': List[tuple[Graph, GraphAction]]}]
            A list of trajectories.
         """
-        return [{"traj": generate_forward_trajectory(i)} for i in graphs]
+        trajs = [{"traj": generate_forward_trajectory(i)} for i in graphs]
+        return trajs
 
     def construct_batch(self, trajs, cond_info, log_rewards):
         """Construct a batch from a list of trajectories and their information
@@ -155,7 +157,7 @@ class SoftQLearning(GFNAlgorithm):
         # The position of the last graph of each trajectory
         final_graph_idx = torch.cumsum(batch.traj_lens, 0) - 1
 
-        # Forward pass of the model, returns a GraphActionCategorical and per molecule predictions
+        # Forward pass of the model, returns a GraphActionCategorical and per object predictions
         # Here we will interpret the logits of the fwd_cat as Q values
         Q, per_state_preds = model(batch, cond_info[batch_idx])
 

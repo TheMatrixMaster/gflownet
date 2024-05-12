@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 import torch.nn as nn
 import torch_geometric.data as gd
@@ -17,7 +16,6 @@ class A2C(GFNAlgorithm):
         self,
         env: GraphBuildingEnv,
         ctx: GraphBuildingEnvContext,
-        rng: np.random.RandomState,
         cfg: Config,
     ):
         """Advantage Actor-Critic implementation, see
@@ -35,15 +33,12 @@ class A2C(GFNAlgorithm):
             A graph environment.
         ctx: GraphBuildingEnvContext
             A context.
-        rng: np.random.RandomState
-            rng used to take random actions
         cfg: Config
             The experiment configuration
 
         """
         self.ctx = ctx
         self.env = env
-        self.rng = rng
         self.global_cfg = cfg
         self.max_len = cfg.algo.max_len
         self.max_nodes = cfg.algo.max_nodes
@@ -56,7 +51,7 @@ class A2C(GFNAlgorithm):
         # Experimental flags
         self.sample_temp = 1
         self.do_q_prime_correction = False
-        self.graph_sampler = GraphSampler(ctx, env, self.max_len, self.max_nodes, rng, self.sample_temp)
+        self.graph_sampler = GraphSampler(ctx, env, self.max_len, self.max_nodes, self.sample_temp)
 
     def set_is_eval(self, is_eval: bool):
         self.is_eval = is_eval
@@ -87,7 +82,7 @@ class A2C(GFNAlgorithm):
         """
         dev = get_worker_device()
         cond_info = cond_info.to(dev)
-        data = self.graph_sampler.sample_from_model(model, n, cond_info, dev, random_action_prob)
+        data = self.graph_sampler.sample_from_model(model, n, cond_info, random_action_prob)
         return data
 
     def create_training_data_from_graphs(self, graphs):
@@ -157,12 +152,12 @@ class A2C(GFNAlgorithm):
         # of length 4, trajectory 1 of length 3, and so on.
         batch_idx = torch.arange(num_trajs, device=dev).repeat_interleave(batch.traj_lens)
 
-        # Forward pass of the model, returns a GraphActionCategorical and per molecule predictions
+        # Forward pass of the model, returns a GraphActionCategorical and per graph predictions
         # Here we will interpret the logits of the fwd_cat as Q values
         policy, per_state_preds = model(batch, cond_info[batch_idx])
         V = per_state_preds[:, 0]
         G = rewards[batch_idx]  # The return is the terminal reward everywhere, we're using gamma==1
-        G = G + (1 - batch.is_valid[batch_idx]) * self.invalid_penalty  # Add in penalty for invalid mol
+        G = G + (1 - batch.is_valid[batch_idx]) * self.invalid_penalty  # Add in penalty for invalid object
         A = G - V
         log_probs = policy.log_prob(batch.actions)
 
