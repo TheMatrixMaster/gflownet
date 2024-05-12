@@ -12,6 +12,7 @@ from gflownet.algo.random_sampling import RandomSampling
 from gflownet.algo.flow_matching import FlowMatching
 from gflownet.algo.soft_q_learning import SoftQLearning
 from gflownet.algo.trajectory_balance import TrajectoryBalance
+from gflownet.algo.soft_actor_critic import SoftActorCritic
 from gflownet.data.replay_buffer import ReplayBuffer
 from gflownet.models.graph_transformer import GraphTransformerGFN
 
@@ -50,9 +51,11 @@ class StandardOnlineTrainer(GFNTrainer):
             algo = SoftQLearning
         elif algo == "RND":
             algo = RandomSampling
+        elif algo == "SAC":
+            algo = SoftActorCritic
         else:
             raise ValueError(algo)
-        self.algo = algo(self.env, self.ctx, self.rng, self.cfg)
+        self.algo = algo(self.env, self.ctx, self.cfg)
 
     def setup_data(self):
         self.training_data = []
@@ -77,13 +80,13 @@ class StandardOnlineTrainer(GFNTrainer):
     def setup(self):
         super().setup()
         self.offline_ratio = 0
-        self.replay_buffer = ReplayBuffer(self.cfg, self.rng) if self.cfg.replay.use else None
+        self.replay_buffer = ReplayBuffer(self.cfg) if self.cfg.replay.use else None
         self.sampling_hooks.append(AvgRewardHook())
         self.valid_sampling_hooks.append(AvgRewardHook())
 
         # Separate Z parameters from non-Z to allow for LR decay on the former
-        if hasattr(self.model, "logZ"):
-            Z_params = list(self.model.logZ.parameters())
+        if hasattr(self.model, "_logZ"):
+            Z_params = list(self.model._logZ.parameters())
             non_Z_params = [i for i in self.model.parameters() if all(id(i) != id(j) for j in Z_params)]
         else:
             Z_params = []
@@ -109,8 +112,10 @@ class StandardOnlineTrainer(GFNTrainer):
         }[self.cfg.opt.clip_grad_type]
 
         # saving hyperparameters
-        git_hash = git.Repo(__file__, search_parent_directories=True).head.object.hexsha[:7]
-        self.cfg.git_hash = git_hash
+        try:
+            self.cfg.git_hash = git.Repo(__file__, search_parent_directories=True).head.object.hexsha[:7]
+        except git.InvalidGitRepositoryError:
+            self.cfg.git_hash = "unknown"  # May not have been installed through git
 
         yaml_cfg = OmegaConf.to_yaml(self.cfg)
         if self.print_config:
@@ -139,8 +144,8 @@ class StandardOnlineTrainer(GFNTrainer):
 
 
 class AvgRewardHook:
-    def __call__(self, trajs, rewards, flat_rewards, extra_info):
+    def __call__(self, trajs, rewards, obj_props, extra_info):
         return {
             "sampled_reward_avg": rewards.mean().item(),
-            "sampled_reward_std": rewards.std().item(),
+            "sampled_reward_std": rewards.std().item()
         }

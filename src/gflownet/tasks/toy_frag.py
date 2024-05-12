@@ -13,7 +13,7 @@ from torch import Tensor
 from torch.utils.data import Dataset
 from torch_geometric.data import Data
 
-from gflownet import FlatRewards, GFNTask, RewardScalar
+from gflownet import GFNTask, LogScalar, ObjectProperties
 from gflownet.config import Config, init_empty
 from gflownet.envs.frag_mol_env import FragMolBuildingEnvContext, Graph
 from gflownet.models import bengio2021flow
@@ -34,22 +34,20 @@ class ToySimilarityTask(GFNTask):
         self,
         target: str,
         cfg: Config,
-        rng: np.random.Generator = None,
         wrap_model: Callable[[nn.Module], nn.Module] = None,
     ):
         self._wrap_model = wrap_model
-        self.rng = rng
         self.target = Chem.MolFromSmiles(target)
         self.fpgen = AllChem.GetMorganGenerator(radius=2, fpSize=2048)
         self.target_fp = self.fpgen.GetSparseCountFingerprint(self.target)
         self.models = self._load_task_models()
-        self.temperature_conditional = TemperatureConditional(cfg, rng)
+        self.temperature_conditional = TemperatureConditional(cfg)
         self.num_cond_dim = self.temperature_conditional.encoding_size()
 
-    def flat_reward_transform(self, y: Union[float, Tensor]) -> FlatRewards:
-        return FlatRewards(torch.as_tensor(y) / 4)
+    def reward_transform(self, y: Union[float, Tensor]) -> ObjectProperties:
+        return ObjectProperties(torch.as_tensor(y) / 4)
 
-    def inverse_flat_reward_transform(self, rp):
+    def inverse_reward_transform(self, rp):
         return rp * 4
 
     def _load_task_models(self):
@@ -58,13 +56,13 @@ class ToySimilarityTask(GFNTask):
     def sample_conditional_information(self, n: int, train_it: int) -> Dict[str, Tensor]:
         return self.temperature_conditional.sample(n)
 
-    def cond_info_to_logreward(self, cond_info: Dict[str, Tensor], flat_reward: FlatRewards) -> RewardScalar:
-        return RewardScalar(self.temperature_conditional.transform(cond_info, to_logreward(flat_reward)))
+    def cond_info_to_logreward(self, cond_info: Dict[str, Tensor], flat_reward: ObjectProperties) -> LogScalar:
+        return LogScalar(self.temperature_conditional.transform(cond_info, to_logreward(flat_reward)))
 
     def compute_reward_from_graph(self, graphs: List[Data]) -> Tensor:
         raise NotImplementedError
 
-    def compute_flat_rewards(self, mols: List[RDMol]) -> Tuple[FlatRewards, Tensor]:
+    def compute_obj_properties(self, mols: List[RDMol]) -> Tuple[ObjectProperties, Tensor]:
         """
         Computes Tanimoto distance between morgan fingerprints of src and target mols
         we don't need to transform from RDMol to graph here since we can compute the
@@ -73,13 +71,13 @@ class ToySimilarityTask(GFNTask):
         fps = [self.fpgen.GetSparseCountFingerprint(m) for m in mols]
         is_valid = torch.tensor([fp is not None for fp in fps]).bool()
         if not is_valid.any():
-            return FlatRewards(torch.zeros((0, 1))), is_valid
+            return ObjectProperties(torch.zeros((0, 1))), is_valid
 
         preds = torch.as_tensor(
             [DataStructs.TanimotoSimilarity(fp, self.target_fp) for fp in fps if fp is not None]
         ).reshape(-1, 1)
         assert len(preds) == is_valid.sum()
-        return FlatRewards(preds), is_valid
+        return ObjectProperties(preds), is_valid
 
 
 class ToySimilarityTrainer(StandardOnlineTrainer):
@@ -123,7 +121,6 @@ class ToySimilarityTrainer(StandardOnlineTrainer):
         self.task = ToySimilarityTask(
             target=TARGET_MOL,
             cfg=self.cfg,
-            rng=self.rng,
             wrap_model=self._wrap_for_mp,
         )
 

@@ -14,7 +14,7 @@ from torch import Tensor
 from torch.utils.data import Dataset
 from torch_geometric.data import Data
 
-from gflownet import FlatRewards, GFNTask, RewardScalar
+from gflownet import GFNTask, LogScalar, ObjectProperties
 from gflownet.config import Config, init_empty
 from gflownet.envs.frag_mol_env import FragMolBuildingEnvContext, Graph
 from gflownet.models import bengio2021flow, mmc
@@ -34,32 +34,6 @@ import matplotlib.pyplot as plt
 from sklearn.metrics.pairwise import cosine_similarity
 
 
-class TargetDataset(Dataset):
-    """Note: this dataset isn't used by default, but turning it on showcases some features of this codebase.
-
-    To turn on, self `cfg.algo.num_from_dataset > 0`"""
-
-    def __init__(self, smis) -> None:
-        super().__init__()
-        self.props: List[Tensor] = []
-        self.mols: List[Graph] = []
-        self.smis = smis
-
-    def set_smis(self, smis):
-        self.smis = smis
-
-    def setup(self, task, ctx):
-        rdmols = [Chem.MolFromSmiles(i) for i in self.smis]
-        self.mols = [ctx.mol_to_graph(i) for i in rdmols]
-        self.props = task.compute_flat_rewards(rdmols)[0]
-
-    def __len__(self):
-        return len(self.mols)
-
-    def __getitem__(self, index):
-        return self.mols[index], self.props[index]
-
-
 class MorphSimilarityTask(GFNTask):
     """Sets up a task where the reward is computed using the cosine distance between the latent
     morphology representation of a target molecule and the latent representation of a generated molecule
@@ -68,13 +42,11 @@ class MorphSimilarityTask(GFNTask):
     def __init__(
         self,
         raw_target,
-        dataset: TargetDataset,
+        dataset: Dataset,
         cfg: Config,
-        rng: np.random.Generator = None,
         wrap_model: Callable[[nn.Module], nn.Module] = None,
     ):
         self._wrap_model = wrap_model
-        self.rng = rng
         self.cfg = cfg
         self.models = self._load_task_models()
 
@@ -86,13 +58,13 @@ class MorphSimilarityTask(GFNTask):
 
         self.target = self._setup_target_representation(raw_target)
         self.mmc_proxy.log_target_properties(self.target_mol, self.target, mode=self.cfg.task.morph_sim.target_mode)
-        self.temperature_conditional = TemperatureConditional(cfg, rng)
+        self.temperature_conditional = TemperatureConditional(cfg)
         self.num_cond_dim = self.temperature_conditional.encoding_size()
 
-    def flat_reward_transform(self, y: Union[float, Tensor]) -> FlatRewards:
-        return FlatRewards(torch.as_tensor(y))
+    def reward_transform(self, y: Union[float, Tensor]) -> ObjectProperties:
+        return ObjectProperties(torch.as_tensor(y))
 
-    def inverse_flat_reward_transform(self, rp):
+    def inverse_reward_transform(self, rp):
         return rp
 
     def _load_task_models(self):
@@ -122,8 +94,8 @@ class MorphSimilarityTask(GFNTask):
     def sample_conditional_information(self, n: int, train_it: int) -> Dict[str, Tensor]:
         return self.temperature_conditional.sample(n)
 
-    def cond_info_to_logreward(self, cond_info: Dict[str, Tensor], flat_reward: FlatRewards) -> RewardScalar:
-        return RewardScalar(self.temperature_conditional.transform(cond_info, to_logreward(flat_reward)))
+    def cond_info_to_logreward(self, cond_info: Dict[str, Tensor], flat_reward: ObjectProperties) -> LogScalar:
+        return LogScalar(self.temperature_conditional.transform(cond_info, to_logreward(flat_reward)))
 
     def compute_reward_from_graph(self, graphs: List[Data]) -> Tensor:
         """
@@ -137,17 +109,17 @@ class MorphSimilarityTask(GFNTask):
         preds = self.models["mmc"](inputs, mod_name="struct").data.cpu().detach().numpy()
         preds = (cosine_similarity(self.target, preds) + 1) / 2
         preds[np.isnan(preds)] = 0
-        return self.flat_reward_transform(preds).clip(1e-4, 1).reshape((-1,))
+        return self.reward_transform(preds).clip(1e-4, 1).reshape((-1,))
 
-    def compute_flat_rewards(self, mols: List[RDMol]) -> Tuple[FlatRewards, Tensor]:
+    def compute_obj_properties(self, mols: List[RDMol]) -> Tuple[ObjectProperties, Tensor]:
         graphs = [mmc.mol2graph(i) for i in mols]
         is_valid = torch.tensor([i is not None for i in graphs]).bool()
         if not is_valid.any():
-            return FlatRewards(torch.zeros((0, 1))), is_valid
+            return ObjectProperties(torch.zeros((0, 1))), is_valid
 
         preds = self.compute_reward_from_graph(graphs).reshape((-1, 1))
         assert len(preds) == is_valid.sum()
-        return FlatRewards(preds), is_valid
+        return ObjectProperties(preds), is_valid
 
     def get_model_latents(self, mols: List[RDMol]) -> Tensor:
         graphs = [mmc.mol2graph(i) for i in mols]
@@ -157,6 +129,32 @@ class MorphSimilarityTask(GFNTask):
         preds = self.models["mmc"](inputs, mod_name="struct").data.cpu().detach().numpy()
         return preds
 
+
+class TargetDataset(Dataset):
+    """Note: this dataset isn't used by default, but turning it on showcases some features of this codebase.
+
+    To turn on, self `cfg.algo.num_from_dataset > 0`"""
+
+    def __init__(self, smis) -> None:
+        super().__init__()
+        self.props: List[Tensor] = []
+        self.mols: List[Graph] = []
+        self.smis = smis
+
+    def set_smis(self, smis):
+        self.smis = smis
+
+    def setup(self, task: MorphSimilarityTask, ctx: FragMolBuildingEnvContext):
+        rdmols = [Chem.MolFromSmiles(i) for i in self.smis]
+        self.mols = [ctx.obj_to_graph(i) for i in rdmols]
+        self.props = task.compute_obj_properties(rdmols)[0]
+
+    def __len__(self):
+        return len(self.mols)
+
+    def __getitem__(self, index):
+        return self.mols[index], self.props[index]
+    
 
 class MorphSimilarityTrainer(StandardOnlineTrainer):
     task: MorphSimilarityTask
@@ -207,7 +205,6 @@ class MorphSimilarityTrainer(StandardOnlineTrainer):
             raw_target=target,
             dataset=self.training_data,
             cfg=self.cfg,
-            rng=self.rng,
             wrap_model=self._wrap_for_mp,
         )
 
@@ -299,19 +296,19 @@ def main():
     config.device = "cuda" if torch.cuda.is_available() else "cpu"
     config.overwrite_existing_exp = True
     config.pickle_mp_messages = True
-    config.num_training_steps = 1000
-    config.validate_every = 0
-    config.num_validation_gen_steps = 0
-    config.num_final_gen_steps = 1000
+    config.num_training_steps = 100
+    config.validate_every = 10
+    config.num_validation_gen_steps = 5
+    config.num_final_gen_steps = 100
     config.num_workers = 0
-    config.opt.lr_decay = 20_000
-    config.algo.sampling_tau = 0.95
+    config.opt.lr_decay = 2000
+    config.algo.sampling_tau = 0.99
 
-    config.algo.method = "RND"
-    config.algo.max_nodes = 8
+    config.algo.method = "SQL"
+    config.algo.max_nodes = 6
     config.algo.train_random_action_prob = 0.01
     config.cond.temperature.sample_dist = "constant"
-    config.cond.temperature.dist_params = [256.0]
+    config.cond.temperature.dist_params = [32.0]
     config.cond.temperature.num_thermometer_dim = 1
 
     config.algo.num_from_policy = 64
@@ -325,9 +322,9 @@ def main():
     config.replay.num_from_replay = 32
     config.replay.num_new_samples = 32
 
-    config.task.morph_sim.target_path = "/home/mila/s/stephen.lu/gfn_gene/res/mmc/targets/sample_67.pkl"
+    config.task.morph_sim.target_path = "/home/mila/s/stephen.lu/gfn_gene/res/mmc/targets/sample_39.pkl"
     config.task.morph_sim.proxy_path = (
-        "/home/mila/s/stephen.lu/gfn_gene/res/mmc/models/morph_struct_90_step_val_loss.ckpt"
+        "/home/mila/s/stephen.lu/gfn_gene/res/mmc/models/epoch=72-step=7738.ckpt"
     )
     config.task.morph_sim.config_dir = "/home/mila/s/stephen.lu/gfn_gene/multimodal_contrastive/configs"
     config.task.morph_sim.config_name = "puma_sm_gmc.yaml"

@@ -22,7 +22,6 @@ class RandomSampling(GFNAlgorithm):
         self,
         env: GraphBuildingEnv,
         ctx: GraphBuildingEnvContext,
-        rng: np.random.RandomState,
         cfg: Config,
     ):
         """Instantiate model.
@@ -40,7 +39,6 @@ class RandomSampling(GFNAlgorithm):
         """
         self.ctx = ctx
         self.env = env
-        self.rng = rng
         self.global_cfg = cfg
         self.max_len = cfg.algo.max_len
         self.max_nodes = cfg.algo.max_nodes
@@ -52,7 +50,6 @@ class RandomSampling(GFNAlgorithm):
             env,
             cfg.algo.max_len,
             cfg.algo.max_nodes,
-            rng,
         )
 
     def set_is_eval(self, is_eval: bool):
@@ -84,7 +81,7 @@ class RandomSampling(GFNAlgorithm):
         """
         dev = get_worker_device()
         cond_info = cond_info.to(dev)
-        data = self.graph_sampler.sample_from_model(model, n, cond_info, dev, random_action_prob=1.0)
+        data = self.graph_sampler.sample_from_model(model, n, cond_info, random_action_prob=1.0)
         return data
 
     def create_training_data_from_graphs(self, graphs):
@@ -120,7 +117,8 @@ class RandomSampling(GFNAlgorithm):
         """
         torch_graphs = [self.ctx.graph_to_Data(i[0]) for tj in trajs for i in tj["traj"]]
         actions = [
-            self.ctx.GraphAction_to_aidx(g, a) for g, a in zip(torch_graphs, [i[1] for tj in trajs for i in tj["traj"]])
+            self.ctx.GraphAction_to_ActionIndex(g, a)
+            for g, a in zip(torch_graphs, [i[1] for tj in trajs for i in tj["traj"]])
         ]
         batch = self.ctx.collate(torch_graphs)
         batch.traj_lens = torch.tensor([len(i["traj"]) for i in trajs])
