@@ -4,10 +4,10 @@ import torch_geometric.data as gd
 from torch import Tensor
 from torch_scatter import scatter
 
-from gflownet.trainer import GFNAlgorithm
 from gflownet.algo.graph_sampling import GraphSampler
 from gflownet.config import Config
 from gflownet.envs.graph_building_env import GraphBuildingEnv, GraphBuildingEnvContext, generate_forward_trajectory
+from gflownet.trainer import GFNAlgorithm
 from gflownet.utils.misc import get_worker_device
 
 
@@ -84,9 +84,9 @@ class SoftQLearning(GFNAlgorithm):
     def create_training_data_from_graphs(
         self,
         graphs,
-        model = None,
-        cond_info = None,
-        random_action_prob = None,
+        model=None,
+        cond_info=None,
+        random_action_prob=None,
     ):
         """Generate trajectories from known endpoints
 

@@ -8,11 +8,11 @@ from omegaconf import OmegaConf
 from torch import Tensor
 
 from gflownet.algo.advantage_actor_critic import A2C
-from gflownet.algo.random_sampling import RandomSampling
 from gflownet.algo.flow_matching import FlowMatching
+from gflownet.algo.random_sampling import RandomSampling
+from gflownet.algo.soft_actor_critic import SoftActorCritic
 from gflownet.algo.soft_q_learning import SoftQLearning
 from gflownet.algo.trajectory_balance import TrajectoryBalance
-from gflownet.algo.soft_actor_critic import SoftActorCritic
 from gflownet.data.replay_buffer import ReplayBuffer
 from gflownet.models.graph_transformer import GraphTransformerGFN
 
@@ -145,7 +145,4 @@ class StandardOnlineTrainer(GFNTrainer):
 
 class AvgRewardHook:
     def __call__(self, trajs, rewards, obj_props, extra_info):
-        return {
-            "sampled_reward_avg": rewards.mean().item(),
-            "sampled_reward_std": rewards.std().item()
-        }
+        return {"sampled_reward_avg": rewards.mean().item(), "sampled_reward_std": rewards.std().item()}

@@ -1,23 +1,20 @@
-import numpy as np
-import hydra
-import wandb
-from omegaconf import OmegaConf
+from collections import defaultdict
+from typing import Optional
 
+import hydra
+import matplotlib.pyplot as plt
+import numpy as np
+import wandb
+from multimodal_contrastive.data.featurization import mol_to_data
+from multimodal_contrastive.networks.utils import move_batch_input_to_device
+from multimodal_contrastive.utils import utils
+from omegaconf import OmegaConf
+from pytorch_lightning import LightningModule
 from rdkit import Chem
 from rdkit.Chem import Draw
 from rdkit.Chem.rdchem import Mol as RDMol
-
-from collections import defaultdict
-from typing import Optional
-from torch.nn import Module
-from pytorch_lightning import LightningModule
-
 from sklearn.metrics.pairwise import cosine_similarity
-import matplotlib.pyplot as plt
-
-from multimodal_contrastive.utils import utils
-from multimodal_contrastive.data.featurization import mol_to_data
-from multimodal_contrastive.networks.utils import move_batch_input_to_device
+from torch.nn import Module
 
 OmegaConf.register_new_resolver("sum", lambda input_list: np.sum(input_list))
 
@@ -44,15 +41,17 @@ class MMC_Proxy(Module):
         print("Cosine similarity struct~morph: ", struct_morph_sim)
         print("Cosine similarity struct~joint: ", struct_joint_sim)
         print("Cosine similarity morph~joint: ", morph_joint_sim)
-        
+
         if not wandb.run:
             return
 
-        wandb.log({
-            "Cosine similarity struct~morph": struct_morph_sim,
-            "Cosine similarity struct~joint": struct_joint_sim,
-            "Cosine similarity morph~joint": morph_joint_sim
-        })
+        wandb.log(
+            {
+                "Cosine similarity struct~morph": struct_morph_sim,
+                "Cosine similarity struct~joint": struct_joint_sim,
+                "Cosine similarity morph~joint": morph_joint_sim,
+            }
+        )
 
         if target_mol:
             mol = target_mol
@@ -63,11 +62,9 @@ class MMC_Proxy(Module):
             fig2, ax2 = plot_mol(mol)
             print(f"Target num atoms: {num_atoms}, Target num bonds: {num_bonds}")
 
-            wandb.log({
-                "Target num atoms": num_atoms,
-                "Target num bonds": num_bonds,
-                "Target molecule": wandb.Image(fig2)
-            })
+            wandb.log(
+                {"Target num atoms": num_atoms, "Target num bonds": num_bonds, "Target molecule": wandb.Image(fig2)}
+            )
 
         plt.clf()
 
@@ -114,15 +111,17 @@ def mol2graph(mol: RDMol):
     return mol_to_data(mol, mode="mol")
 
 
-def plot_mol(mol: RDMol, top_rew: float=None, scaffold: str=None):
+def plot_mol(mol: RDMol, top_rew: float = None, scaffold: str = None):
     num_atoms = mol.GetNumAtoms()
     num_bonds = mol.GetNumBonds()
 
     # make title
     title = f"Num atoms: {num_atoms}, Num bonds: {num_bonds}"
-    if top_rew: title += f"\n Reward: {top_rew}"
-    if scaffold: title += f"\n Scaffold: {scaffold}"
-    
+    if top_rew:
+        title += f"\n Reward: {top_rew}"
+    if scaffold:
+        title += f"\n Scaffold: {scaffold}"
+
     # plot the target molecule
     fig, ax = plt.subplots(figsize=(5, 5))
     ax.set_title(title)

@@ -1,15 +1,17 @@
+import pickle
+import random
 import socket
 from typing import Callable, Dict, List, Tuple, Union
 
-import random
-import wandb
-import pickle
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
 import torch_geometric.data as gd
+import wandb
 from rdkit import Chem
 from rdkit.Chem.rdchem import Mol as RDMol
+from sklearn.metrics.pairwise import cosine_similarity
 from torch import Tensor
 from torch.utils.data import Dataset
 from torch_geometric.data import Data
@@ -21,19 +23,16 @@ from gflownet.models import bengio2021flow, mmc
 from gflownet.online_trainer import StandardOnlineTrainer
 from gflownet.utils.conditioning import TemperatureConditional
 from gflownet.utils.misc import get_worker_device
-from gflownet.utils.transforms import to_logreward
 from gflownet.utils.multiobjective_hooks import (
     AtomicPropertiesHook,
-    RewardPercentilesHook,
     NumberOfModesHook,
     NumberOfScaffoldsHook,
+    NumberOfUniqueTrajectoriesHook,
+    RewardPercentilesHook,
     SnapshotDistributionHook,
     TopSimilarityToTargetHook,
-    NumberOfUniqueTrajectoriesHook,
 )
-
-import matplotlib.pyplot as plt
-from sklearn.metrics.pairwise import cosine_similarity
+from gflownet.utils.transforms import to_logreward
 
 
 class MorphSimilarityTask(GFNTask):
@@ -61,9 +60,7 @@ class MorphSimilarityTask(GFNTask):
         struct_latent, morph_latent, joint_latent = self._setup_target_representation(raw_target)
         self.target = morph_latent if cfg.task.morph_sim.target_mode == "morph" else joint_latent
         self.mmc_proxy.log_target_properties(
-            self.target_mol,
-            struct_latent, morph_latent, joint_latent,
-            mode=self.cfg.task.morph_sim.target_mode
+            self.target_mol, struct_latent, morph_latent, joint_latent, mode=self.cfg.task.morph_sim.target_mode
         )
         self.temperature_conditional = TemperatureConditional(cfg)
         self.num_cond_dim = self.temperature_conditional.encoding_size()
@@ -93,7 +90,7 @@ class MorphSimilarityTask(GFNTask):
         target["inputs"]["joint"]["morph"] = target["inputs"]["joint"]["morph"][None, ...]
         target["inputs"] = mmc.to_device(target["inputs"], device=get_worker_device())
         assert self.cfg.task.morph_sim.target_mode in ["morph", "joint"], "Invalid target mode"
-        
+
         with torch.no_grad():
             morph_latent = self.models["mmc"](target, mod_name="morph").cpu().detach().numpy()
             struct_latent = self.models["mmc"](target, mod_name="struct").cpu().detach().numpy()
@@ -164,7 +161,7 @@ class TargetDataset(Dataset):
 
     def __getitem__(self, index):
         return self.mols[index], self.props[index]
-    
+
 
 class MorphSimilarityTrainer(StandardOnlineTrainer):
     task: MorphSimilarityTask
@@ -261,7 +258,8 @@ class MorphSimilarityTrainer(StandardOnlineTrainer):
         class NumModesCallback:
             def on_validation_end(self, metrics):
                 for hook in parent._num_modes_hooks:
-                    if hook.should_stop_logging(hook.sim_high): continue
+                    if hook.should_stop_logging(hook.sim_high):
+                        continue
                     simkey = hook.get_key_from_sim(hook.sim_high)
                     modes_by_scaffold = hook.split_by_scaffold()
                     num_to_plot = min(10, len(modes_by_scaffold))
@@ -320,15 +318,15 @@ def main():
     config.opt.lr_decay = 2000
     config.algo.sampling_tau = 0.99
 
-    config.algo.method = "TB"
+    config.algo.method = "SQL"
     config.algo.max_nodes = 6
     config.algo.train_random_action_prob = 0.05
     config.cond.temperature.sample_dist = "constant"
     config.cond.temperature.dist_params = [64.0]
     config.cond.temperature.num_thermometer_dim = 1
 
-    config.algo.num_from_policy = 32
-    config.algo.num_from_dataset = 32
+    config.algo.num_from_policy = 64
+    config.algo.num_from_dataset = 0
     config.algo.valid_num_from_policy = 64
     config.algo.valid_num_from_dataset = 0
 
@@ -339,9 +337,7 @@ def main():
     config.replay.num_new_samples = 32
 
     config.task.morph_sim.target_path = "/home/mila/s/stephen.lu/gfn_gene/res/mmc/targets/sample_39.pkl"
-    config.task.morph_sim.proxy_path = (
-        "/home/mila/s/stephen.lu/gfn_gene/res/mmc/models/epoch=72-step=7738.ckpt"
-    )
+    config.task.morph_sim.proxy_path = "/home/mila/s/stephen.lu/gfn_gene/res/mmc/models/epoch=72-step=7738.ckpt"
     config.task.morph_sim.config_dir = "/home/mila/s/stephen.lu/gfn_gene/multimodal_contrastive/configs"
     config.task.morph_sim.config_name = "puma_sm_gmc.yaml"
     config.task.morph_sim.reduced_frag = False

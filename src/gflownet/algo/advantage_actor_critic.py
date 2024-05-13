@@ -3,9 +3,9 @@ import torch.nn as nn
 import torch_geometric.data as gd
 from torch import Tensor
 
-from gflownet.trainer import GFNAlgorithm
 from gflownet.config import Config
 from gflownet.envs.graph_building_env import GraphBuildingEnv, GraphBuildingEnvContext, generate_forward_trajectory
+from gflownet.trainer import GFNAlgorithm
 from gflownet.utils.misc import get_worker_device
 
 from .graph_sampling import GraphSampler

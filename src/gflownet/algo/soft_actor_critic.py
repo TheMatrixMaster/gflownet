@@ -1,4 +1,3 @@
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -9,8 +8,8 @@ from torch_scatter import scatter
 from gflownet.algo.graph_sampling import GraphSampler
 from gflownet.config import Config
 from gflownet.envs.graph_building_env import (
-    GraphBuildingEnv,
     GraphActionCategorical,
+    GraphBuildingEnv,
     GraphBuildingEnvContext,
     generate_forward_trajectory,
 )
@@ -169,40 +168,40 @@ class SoftActorCritic:
         # of length 4, trajectory 1 of length 3, and so on.
         batch_idx = torch.arange(num_trajs, device=dev).repeat_interleave(batch.traj_lens)
         # The position of the last graph of each trajectory
-        final_graph_idx = torch.cumsum(batch.traj_lens, 0) - 1    
+        final_graph_idx = torch.cumsum(batch.traj_lens, 0) - 1
 
         policy: GraphActionCategorical
         qf1_next_target: GraphActionCategorical
-        qf2_next_target: GraphActionCategorical  
+        qf2_next_target: GraphActionCategorical
         qf1_next: GraphActionCategorical
-        qf2_next: GraphActionCategorical  
-        
+        qf2_next: GraphActionCategorical
+
         actor = actor.to(dev)
         critic1 = critic1.to(dev)
         critic2 = critic2.to(dev)
         critic1_target = critic1_target.to(dev)
         critic2_target = critic2_target.to(dev)
-        
+
         # Critic Training
         with torch.no_grad():
             policy, _ = actor(batch, cond_info[batch_idx])
             next_state_log_pi = policy.logsoftmax()
             next_state_action_probs = [torch.exp(lp) for lp in next_state_log_pi]
-        
+
             qf1_next_target, _ = critic1_target(batch, cond_info[batch_idx])
             qf2_next_target, _ = critic2_target(batch, cond_info[batch_idx])
             min_qf_next_target = [
-                w * (torch.min(qf1, qf2) - self.alpha*lp)
-                for w, qf1, qf2, lp
-                in zip(
-                    next_state_action_probs,
-                    qf1_next_target.logits,
-                    qf2_next_target.logits,
-                    next_state_log_pi
+                w * (torch.min(qf1, qf2) - self.alpha * lp)
+                for w, qf1, qf2, lp in zip(
+                    next_state_action_probs, qf1_next_target.logits, qf2_next_target.logits, next_state_log_pi
                 )
             ]
-            V_soft = sum([scatter(i, b, dim=0, dim_size=len(batch_idx), reduce="sum").sum(1) 
-                          for i, b in zip(min_qf_next_target, policy.batch)]).detach()
+            V_soft = sum(
+                [
+                    scatter(i, b, dim=0, dim_size=len(batch_idx), reduce="sum").sum(1)
+                    for i, b in zip(min_qf_next_target, policy.batch)
+                ]
+            ).detach()
             Q_hat = self.gamma * torch.cat([V_soft[1:], torch.zeros_like(V_soft[:1])])
             Q_hat[final_graph_idx] = rewards + (1 - batch.is_valid) * self.invalid_penalty
 
@@ -212,15 +211,15 @@ class SoftActorCritic:
         Q_sa2 = qf2_next.log_prob(batch.actions, logprobs=qf2_next.logits)
         qf1_loss = F.mse_loss(Q_sa1, Q_hat).mean()
         qf2_loss = F.mse_loss(Q_sa2, Q_hat).mean()
-        critic_loss = (qf1_loss + qf2_loss)
-        
+        critic_loss = qf1_loss + qf2_loss
+
         # Actor training
         critic_loss.backward()
         opt_critic1.step()
         opt_critic1.zero_grad()
         opt_critic2.step()
         opt_critic2.zero_grad()
-        
+
         policy, _ = actor(batch, cond_info[batch_idx])
         next_state_log_pi = policy.logsoftmax()
         next_state_action_probs = [torch.exp(lp) for lp in next_state_log_pi]
@@ -230,19 +229,17 @@ class SoftActorCritic:
             qf2_next, _ = critic2(batch, cond_info[batch_idx])
 
         min_qf_next = [
-            w * (self.alpha*lp - torch.min(qf1, qf2))
-            for w, qf1, qf2, lp
-            in zip(
-                next_state_action_probs,
-                qf1_next.logits,
-                qf2_next.logits,
-                next_state_log_pi
-            )
+            w * (self.alpha * lp - torch.min(qf1, qf2))
+            for w, qf1, qf2, lp in zip(next_state_action_probs, qf1_next.logits, qf2_next.logits, next_state_log_pi)
         ]
-        
-        actor_loss = sum([scatter(i, b, dim=0, dim_size=len(batch_idx), reduce="sum").sum(1)
-                          for i, b in zip(min_qf_next, policy.batch)]).mean()
-            
+
+        actor_loss = sum(
+            [
+                scatter(i, b, dim=0, dim_size=len(batch_idx), reduce="sum").sum(1)
+                for i, b in zip(min_qf_next, policy.batch)
+            ]
+        ).mean()
+
         # Final loss
         loss = actor_loss
         invalid_mask = 1 - batch.is_valid
@@ -251,7 +248,7 @@ class SoftActorCritic:
             "critic_loss": critic_loss.item(),
             "mean_loss": loss.item(),
             "invalid_trajectories": invalid_mask.sum() / batch.num_online if batch.num_online > 0 else 0,
-            "rewards": rewards.mean()
+            "rewards": rewards.mean(),
         }
 
         if not torch.isfinite(loss).all():

@@ -3,21 +3,19 @@ import pathlib
 import queue
 import threading
 from collections import defaultdict
+from itertools import combinations
 from typing import List
 
-import numpy as np
-from itertools import combinations
 import matplotlib.pyplot as plt
-
+import numpy as np
 import torch
 import torch.multiprocessing as mp
-from torch import Tensor
-
-from gflownet.utils import metrics
-
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem.Scaffolds.MurckoScaffold import GetScaffoldForMol
+from torch import Tensor
+
+from gflownet.utils import metrics
 
 
 class MultiObjectiveStatsHook:
@@ -366,6 +364,7 @@ class SnapshotDistributionHook:
 
 class NumberOfScaffoldsHook:
     """Plots number of unique molecular scaffolds throughout training"""
+
     def __init__(self) -> None:
         self.scaffolds = set()
 
@@ -378,9 +377,9 @@ class NumberOfScaffoldsHook:
         return {"num_scaffolds": len(self.scaffolds)}
 
 
-
 class TopSimilarityToTargetHook:
     """Keeps track of the molecule with the highest tanimoto similariy to the target"""
+
     def __init__(self, target_mol) -> None:
         self.fpgen = AllChem.GetRDKitFPGenerator()
         self.target_fp = self.fpgen.GetFingerprint(target_mol)
@@ -415,10 +414,10 @@ class NumberOfModesHook:
     TODO: Support multiple workers by using a multiprocessing.Queue
     """
 
-    reward_mode: str                # "hard" or "percentile"
-    sim_thresholds: List[float]     # similarity thresholds to log
-    reward_threshold: float         # reward threshold to log
-    stop_logging_after: int         # number of modes after which to stop logging
+    reward_mode: str  # "hard" or "percentile"
+    sim_thresholds: List[float]  # similarity thresholds to log
+    reward_threshold: float  # reward threshold to log
+    stop_logging_after: int  # number of modes after which to stop logging
 
     def __init__(
         self,
@@ -445,7 +444,8 @@ class NumberOfModesHook:
         keys_to_update = set([k for k in self.simkeys if k in self.modes])
         for traj, reward in zip(trajs, rewards):
             mol = traj["mol"]
-            if mol is None or reward < self.reward_threshold: continue
+            if mol is None or reward < self.reward_threshold:
+                continue
             fp = self.fpgen.GetFingerprint(mol)
 
             for sim_thresh in self.sim_thresholds:
@@ -459,12 +459,13 @@ class NumberOfModesHook:
 
         for k in keys_to_update:
             res[f"{self.__label__(k)}"] = len(self.modes[k])
-            
+
         return res
 
     def should_stop_logging(self, sim_thresh: float):
         simkey = self.get_key_from_sim(sim_thresh)
-        if self.stop_logging_after is None or simkey not in self.modes: return False
+        if self.stop_logging_after is None or simkey not in self.modes:
+            return False
         return len(self.modes[simkey]) >= self.stop_logging_after
 
     def split_by_scaffold(self):
@@ -481,8 +482,8 @@ class NumberOfModesHook:
 
     def get_key_from_sim(self, sim_thresh: float):
         assert sim_thresh != None
-        return f'sim<={sim_thresh:.2f}'
-    
+        return f"sim<={sim_thresh:.2f}"
+
     def __label__(self, simkey: str):
         return f"modes_>=_{self.reward_threshold:.2f}_{simkey}"
 
