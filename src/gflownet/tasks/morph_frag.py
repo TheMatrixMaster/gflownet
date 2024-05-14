@@ -318,7 +318,7 @@ def main():
     config.opt.lr_decay = 2000
     config.algo.sampling_tau = 0.99
 
-    config.algo.method = "SQL"
+    config.algo.method = "SAC"
     config.algo.max_nodes = 6
     config.algo.train_random_action_prob = 0.05
     config.cond.temperature.sample_dist = "constant"

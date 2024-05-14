@@ -7,6 +7,8 @@ from torch_scatter import scatter
 
 from gflownet.algo.graph_sampling import GraphSampler
 from gflownet.config import Config
+from gflownet.trainer import GFNAlgorithm
+from gflownet.utils.misc import get_worker_device
 from gflownet.envs.graph_building_env import (
     GraphActionCategorical,
     GraphBuildingEnv,
@@ -15,7 +17,7 @@ from gflownet.envs.graph_building_env import (
 )
 
 
-class SoftActorCritic:
+class SoftActorCritic(GFNAlgorithm):
     def __init__(
         self,
         env: GraphBuildingEnv,
@@ -42,19 +44,21 @@ class SoftActorCritic:
         """
         self.ctx = ctx
         self.env = env
+        self.global_cfg = cfg
         self.max_len = cfg.algo.max_len
         self.max_nodes = cfg.algo.max_nodes
         self.illegal_action_logreward = cfg.algo.illegal_action_logreward
         self.gamma = 1.0
         self.invalid_penalty = -75
         self.bootstrap_own_reward = False
-
         # we used fixed entropy regularization coefficient for now, but it is common to learn this
         self.alpha = 0.15
-
         # Experimental flags
         self.sample_temp = 1
         self.graph_sampler = GraphSampler(ctx, env, self.max_len, self.max_nodes, self.sample_temp)
+
+    def set_is_eval(self, is_eval: bool):
+        self.is_eval = is_eval
 
     def create_training_data_from_own_samples(
         self, model: nn.Module, n: int, cond_info: Tensor, random_action_prob: float = 0
@@ -80,9 +84,9 @@ class SoftActorCritic:
            - bck_logprob: sum logprobs P_B
            - is_valid: is the generated graph valid according to the env & ctx
         """
-        dev = self.ctx.device
+        dev = get_worker_device()
         cond_info = cond_info.to(dev)
-        data = self.graph_sampler.sample_from_model(model, n, cond_info, dev, random_action_prob)
+        data = self.graph_sampler.sample_from_model(model, n, cond_info, random_action_prob)
         return data
 
     def create_training_data_from_graphs(self, graphs):
