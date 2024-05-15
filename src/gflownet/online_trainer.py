@@ -12,6 +12,8 @@ from gflownet.algo.random_sampling import RandomSampling
 from gflownet.algo.flow_matching import FlowMatching
 from gflownet.algo.soft_q_learning import SoftQLearning
 from gflownet.algo.trajectory_balance import TrajectoryBalance
+from gflownet.algo.soft_actor_critic import SoftActorCritic
+from gflownet.algo.q_learning import QLearning
 from gflownet.data.replay_buffer import ReplayBuffer
 from gflownet.models.graph_transformer import GraphTransformerGFN
 
@@ -37,6 +39,19 @@ class StandardOnlineTrainer(GFNTrainer):
             do_bck=self.cfg.algo.tb.do_parameterize_p_b,
             num_graph_out=self.cfg.algo.tb.do_predict_n + 1,
         )
+        if self.cfg.algo.method == "SAC":
+            self.critic1 = GraphTransformerGFN(
+                self.ctx,
+                self.cfg,
+                do_bck=self.cfg.algo.tb.do_parameterize_p_b,
+                num_graph_out=self.cfg.algo.tb.do_predict_n + 1,
+            )
+            self.critic2 = GraphTransformerGFN(
+                self.ctx,
+                self.cfg,
+                do_bck=self.cfg.algo.tb.do_parameterize_p_b,
+                num_graph_out=self.cfg.algo.tb.do_predict_n + 1,
+            )
 
     def setup_algo(self):
         algo = self.cfg.algo.method
@@ -50,6 +65,10 @@ class StandardOnlineTrainer(GFNTrainer):
             algo = SoftQLearning
         elif algo == "RND":
             algo = RandomSampling
+        elif algo == "SAC":
+            algo = SoftActorCritic
+        elif algo == "DQN":
+            algo = QLearning
         else:
             raise ValueError(algo)
         self.algo = algo(self.env, self.ctx, self.rng, self.cfg)
@@ -94,12 +113,19 @@ class StandardOnlineTrainer(GFNTrainer):
         self.lr_sched_Z = torch.optim.lr_scheduler.LambdaLR(
             self.opt_Z, lambda steps: 2 ** (-steps / self.cfg.algo.tb.Z_lr_decay)
         )
+        if self.cfg.algo.method == "SAC":
+            self.opt_critic1 = self._opt(self.critic1.parameters(), lr=1e-3)
+            self.opt_critic2 = self._opt(self.critic2.parameters(), lr=1e-3)
 
         self.sampling_tau = self.cfg.algo.sampling_tau
         if self.sampling_tau > 0:
             self.sampling_model = copy.deepcopy(self.model)
         else:
             self.sampling_model = self.model
+
+        if self.cfg.algo.method == "SAC" and self.sampling_tau > 0:
+            self.critic1_target = copy.deepcopy(self.critic1)
+            self.critic2_target = copy.deepcopy(self.critic2)
 
         self.clip_grad_callback = {
             "value": lambda params: torch.nn.utils.clip_grad_value_(params, self.cfg.opt.clip_grad_param),
@@ -135,6 +161,11 @@ class StandardOnlineTrainer(GFNTrainer):
         if self.sampling_tau > 0:
             for a, b in zip(self.model.parameters(), self.sampling_model.parameters()):
                 b.data.mul_(self.sampling_tau).add_(a.data * (1 - self.sampling_tau))
+            if self.cfg.algo.method == "SAC":
+                for a, b in zip(self.critic1.parameters(), self.critic1_target.parameters()):
+                    b.data.mul_(self.sampling_tau).add_(a.data * (1 - self.sampling_tau))
+                for a, b in zip(self.critic2.parameters(), self.critic2_target.parameters()):
+                    b.data.mul_(self.sampling_tau).add_(a.data * (1 - self.sampling_tau))
         return {"grad_norm": g0, "grad_norm_clip": g1}
 
 

@@ -130,7 +130,9 @@ class GraphSampler:
                     is_random_action[b][:, None] * torch.ones_like(i) * m * 100 + i * (1 - is_random_action[b][:, None])
                     for i, m, b in zip(fwd_cat.logits, masks, fwd_cat.batch)
                 ]
-            if self.sample_temp != 1:
+            if self.sample_temp == 0:
+                actions = fwd_cat.argmax(fwd_cat.logits)  # greedy sampling
+            elif self.sample_temp != 1:
                 sample_cat = copy.copy(fwd_cat)
                 sample_cat.logits = [i / self.sample_temp for i in fwd_cat.logits]
                 actions = sample_cat.sample()

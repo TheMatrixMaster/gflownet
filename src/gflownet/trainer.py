@@ -218,7 +218,14 @@ class GFNTrainer:
         tick = time.time()
         self.model.train()
         try:
-            loss, info = self.algo.compute_batch_losses(self.model, batch)
+            if self.cfg.algo.method == "SAC":
+                loss, info = self.algo.compute_batch_losses(self.model, self.critic1, self.critic2,
+                                                            self.critic1_target, self.critic2_target,
+                                                            self.opt_critic1, self.opt_critic2, batch)
+            elif self.cfg.algo.method == "DQN":
+                loss, info = self.algo.compute_batch_losses(self.model, self.sampling_model, batch)
+            else:
+                loss, info = self.algo.compute_batch_losses(self.model, batch)
             if not torch.isfinite(loss):
                 raise ValueError("loss is not finite")
             step_info = self.step(loss)
@@ -240,7 +247,14 @@ class GFNTrainer:
     def evaluate_batch(self, batch: gd.Batch, epoch_idx: int = 0, batch_idx: int = 0) -> Dict[str, Any]:
         tick = time.time()
         self.model.eval()
-        loss, info = self.algo.compute_batch_losses(self.model, batch)
+        if self.cfg.algo.method == "SAC":
+            loss, info = self.algo.compute_batch_losses(self.model, self.critic1, self.critic2,
+                                                        self.critic1_target, self.critic2_target,
+                                                        self.opt_critic1, self.opt_critic2, batch)
+        elif self.cfg.algo.method == "DQN":
+                loss, info = self.algo.compute_batch_losses(self.model, self.sampling_model, batch)
+        else:
+            loss, info = self.algo.compute_batch_losses(self.model, batch)
         if hasattr(batch, "extra_info"):
             info.update(batch.extra_info)
         info["eval_time"] = time.time() - tick
