@@ -1,15 +1,17 @@
+import pickle
+import random
 import socket
 from typing import Callable, Dict, List, Tuple, Union
 
-import random
-import wandb
-import pickle
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
 import torch_geometric.data as gd
+import wandb
 from rdkit import Chem
 from rdkit.Chem.rdchem import Mol as RDMol
+from sklearn.metrics.pairwise import cosine_similarity
 from torch import Tensor
 from torch.utils.data import Dataset
 from torch_geometric.data import Data
@@ -21,17 +23,16 @@ from gflownet.models import bengio2021flow, mmc
 from gflownet.online_trainer import StandardOnlineTrainer
 from gflownet.utils.conditioning import TemperatureConditional
 from gflownet.utils.misc import get_worker_device
-from gflownet.utils.transforms import to_logreward
 from gflownet.utils.multiobjective_hooks import (
     AtomicPropertiesHook,
-    RewardPercentilesHook,
     NumberOfModesHook,
-    SnapshotDistributionHook,
+    NumberOfScaffoldsHook,
     NumberOfUniqueTrajectoriesHook,
+    RewardPercentilesHook,
+    SnapshotDistributionHook,
+    TopSimilarityToTargetHook,
 )
-
-import matplotlib.pyplot as plt
-from sklearn.metrics.pairwise import cosine_similarity
+from gflownet.utils.transforms import to_logreward
 
 
 class MorphSimilarityTask(GFNTask):
@@ -56,8 +57,11 @@ class MorphSimilarityTask(GFNTask):
             self.dataset = dataset
             self.dataset.set_smis([bytes(raw_target["inputs"]["struct"].mols)] * cfg.algo.num_from_dataset)
 
-        self.target = self._setup_target_representation(raw_target)
-        self.mmc_proxy.log_target_properties(self.target_mol, self.target, mode=self.cfg.task.morph_sim.target_mode)
+        struct_latent, morph_latent, joint_latent = self._setup_target_representation(raw_target)
+        self.target = morph_latent if cfg.task.morph_sim.target_mode == "morph" else joint_latent
+        self.mmc_proxy.log_target_properties(
+            self.target_mol, struct_latent, morph_latent, joint_latent, mode=self.cfg.task.morph_sim.target_mode
+        )
         self.temperature_conditional = TemperatureConditional(cfg)
         self.num_cond_dim = self.temperature_conditional.encoding_size()
 
@@ -86,10 +90,13 @@ class MorphSimilarityTask(GFNTask):
         target["inputs"]["joint"]["morph"] = target["inputs"]["joint"]["morph"][None, ...]
         target["inputs"] = mmc.to_device(target["inputs"], device=get_worker_device())
         assert self.cfg.task.morph_sim.target_mode in ["morph", "joint"], "Invalid target mode"
-        pred = self.models["mmc"](target, mod_name=self.cfg.task.morph_sim.target_mode)
-        # in reality, we may only have access to the morphology / transcriptomics of the target
-        # but we may not always have access to a target molecular structure
-        return pred.cpu().detach().numpy()
+
+        with torch.no_grad():
+            morph_latent = self.models["mmc"](target, mod_name="morph").cpu().detach().numpy()
+            struct_latent = self.models["mmc"](target, mod_name="struct").cpu().detach().numpy()
+            joint_latent = self.models["mmc"](target, mod_name="joint").cpu().detach().numpy()
+
+        return struct_latent, morph_latent, joint_latent
 
     def sample_conditional_information(self, n: int, train_it: int) -> Dict[str, Tensor]:
         return self.temperature_conditional.sample(n)
@@ -154,7 +161,7 @@ class TargetDataset(Dataset):
 
     def __getitem__(self, index):
         return self.mols[index], self.props[index]
-    
+
 
 class MorphSimilarityTrainer(StandardOnlineTrainer):
     task: MorphSimilarityTask
@@ -226,14 +233,18 @@ class MorphSimilarityTrainer(StandardOnlineTrainer):
 
         self.sampling_hooks.append(AtomicPropertiesHook())
         self.sampling_hooks.append(RewardPercentilesHook())
+        self.sampling_hooks.append(NumberOfScaffoldsHook())
         self.sampling_hooks.append(NumberOfUniqueTrajectoriesHook())
+        self.sampling_hooks.append(TopSimilarityToTargetHook(self.task.target_mol))
 
         self._num_modes_hooks = [
-            # NumberOfModesHook(reward_mode="hard", reward_threshold=0.85, sim_threshold=0.7),
-            NumberOfModesHook(reward_mode="hard", reward_threshold=0.9, sim_threshold=0.7),
-            NumberOfModesHook(reward_mode="hard", reward_threshold=0.925, sim_threshold=0.7),
-            NumberOfModesHook(reward_mode="hard", reward_threshold=0.95, sim_threshold=0.7),
-            # NumberOfModesHook(reward_mode="hard", reward_threshold=0.975, sim_threshold=0.7),
+            NumberOfModesHook(reward_mode="hard", reward_threshold=0.7, sim_thresholds=[0.7, 0.5, 0.2]),
+            NumberOfModesHook(reward_mode="hard", reward_threshold=0.75, sim_thresholds=[0.7, 0.5, 0.2]),
+            NumberOfModesHook(reward_mode="hard", reward_threshold=0.8, sim_thresholds=[0.7, 0.5, 0.2]),
+            NumberOfModesHook(reward_mode="hard", reward_threshold=0.85, sim_thresholds=[0.7, 0.5, 0.2]),
+            NumberOfModesHook(reward_mode="hard", reward_threshold=0.9, sim_thresholds=[0.7, 0.5, 0.2]),
+            NumberOfModesHook(reward_mode="hard", reward_threshold=0.95, sim_thresholds=[0.7, 0.5, 0.2]),
+            NumberOfModesHook(reward_mode="hard", reward_threshold=0.975, sim_thresholds=[0.7, 0.5, 0.2]),
         ]
         self.sampling_hooks.extend(self._num_modes_hooks)
 
@@ -247,13 +258,16 @@ class MorphSimilarityTrainer(StandardOnlineTrainer):
         class NumModesCallback:
             def on_validation_end(self, metrics):
                 for hook in parent._num_modes_hooks:
+                    if hook.should_stop_logging(hook.sim_high):
+                        continue
+                    simkey = hook.get_key_from_sim(hook.sim_high)
                     modes_by_scaffold = hook.split_by_scaffold()
                     num_to_plot = min(10, len(modes_by_scaffold))
                     scaffolds = random.sample(list(modes_by_scaffold.keys()), num_to_plot)
                     for scaffold in scaffolds:
                         mol, top_rew = modes_by_scaffold[scaffold][0]
-                        fig, ax = mmc.plot_mol(mol)
-                        metrics[f"reward: {top_rew}, scaffold: {scaffold}"] = wandb.Image(fig)
+                        fig, ax = mmc.plot_mol(mol, top_rew, scaffold)
+                        metrics[f"{hook.__label__(simkey)}"] = wandb.Image(fig)
                         plt.close(fig)
 
         class SnapshotDistCallback:
@@ -304,11 +318,11 @@ def main():
     config.opt.lr_decay = 2000
     config.algo.sampling_tau = 0.99
 
-    config.algo.method = "SQL"
+    config.algo.method = "SAC"
     config.algo.max_nodes = 6
-    config.algo.train_random_action_prob = 0.01
+    config.algo.train_random_action_prob = 0.05
     config.cond.temperature.sample_dist = "constant"
-    config.cond.temperature.dist_params = [32.0]
+    config.cond.temperature.dist_params = [64.0]
     config.cond.temperature.num_thermometer_dim = 1
 
     config.algo.num_from_policy = 64
@@ -323,13 +337,11 @@ def main():
     config.replay.num_new_samples = 32
 
     config.task.morph_sim.target_path = "/home/mila/s/stephen.lu/gfn_gene/res/mmc/targets/sample_39.pkl"
-    config.task.morph_sim.proxy_path = (
-        "/home/mila/s/stephen.lu/gfn_gene/res/mmc/models/epoch=72-step=7738.ckpt"
-    )
+    config.task.morph_sim.proxy_path = "/home/mila/s/stephen.lu/gfn_gene/res/mmc/models/epoch=72-step=7738.ckpt"
     config.task.morph_sim.config_dir = "/home/mila/s/stephen.lu/gfn_gene/multimodal_contrastive/configs"
     config.task.morph_sim.config_name = "puma_sm_gmc.yaml"
     config.task.morph_sim.reduced_frag = False
-    config.task.morph_sim.target_mode = "morph"
+    config.task.morph_sim.target_mode = "joint"
 
     trial = MorphSimilarityTrainer(config)
     trial.run()

@@ -1,6 +1,6 @@
-from dataclasses import dataclass, field, fields, asdict, is_dataclass, Field
-from typing import Optional, List, Any
 from copy import copy
+from dataclasses import Field, asdict, dataclass, field, fields, is_dataclass
+from typing import Any, List, Optional
 
 from omegaconf import MISSING
 

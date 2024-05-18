@@ -3,21 +3,19 @@ import pathlib
 import queue
 import threading
 from collections import defaultdict
+from itertools import combinations
 from typing import List
 
-import numpy as np
-from itertools import combinations
 import matplotlib.pyplot as plt
-
+import numpy as np
 import torch
 import torch.multiprocessing as mp
-from torch import Tensor
-
-from gflownet.utils import metrics
-
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem.Scaffolds.MurckoScaffold import GetScaffoldForMol
+from torch import Tensor
+
+from gflownet.utils import metrics
 
 
 class MultiObjectiveStatsHook:
@@ -317,7 +315,7 @@ class SnapshotDistributionHook:
 
     def __init__(self) -> None:
         self.mols = []
-        self.fpgen = AllChem.GetMorganGenerator(radius=2, fpSize=2048)
+        self.fpgen = AllChem.GetRDKitFPGenerator()
 
     def plot_reward_distribution(self):
         rewards = [i[1] for i in self.mols]
@@ -331,7 +329,7 @@ class SnapshotDistributionHook:
         k = min(k, len(self.mols))
         mols_sorted = sorted(self.mols, key=lambda x: x[1], reverse=True)
         top_k_mols = [i[0] for i in mols_sorted[:k]]
-        top_k_fps = [self.fpgen.GetCountFingerprint(mol) for mol in top_k_mols]
+        top_k_fps = [self.fpgen.GetFingerprint(mol) for mol in top_k_mols]
 
         tanimoto_sim = []
         for i, j in combinations(top_k_fps, 2):
@@ -345,8 +343,8 @@ class SnapshotDistributionHook:
         return fig
 
     def plot_tanimoto_similarity_to_target(self, target_mol):
-        target_fp = self.fpgen.GetCountFingerprint(target_mol)
-        fps = [self.fpgen.GetCountFingerprint(i[0]) for i in self.mols]
+        target_fp = self.fpgen.GetFingerprint(target_mol)
+        fps = [self.fpgen.GetFingerprint(i[0]) for i in self.mols]
         tanimoto_sim = AllChem.DataStructs.BulkTanimotoSimilarity(target_fp, fps)
 
         fig, ax = plt.subplots()
@@ -364,6 +362,49 @@ class SnapshotDistributionHook:
         return {}
 
 
+class NumberOfScaffoldsHook:
+    """Plots number of unique molecular scaffolds throughout training"""
+
+    def __init__(self) -> None:
+        self.scaffolds = set()
+
+    def __call__(self, trajs, rewards, flat_rewards, cond_info):
+        for traj in trajs:
+            mol = traj["mol"]
+            if mol is not None:
+                scaffold = Chem.MolToSmiles(GetScaffoldForMol(mol))
+                self.scaffolds.add(scaffold)
+        return {"num_scaffolds": len(self.scaffolds)}
+
+
+class TopSimilarityToTargetHook:
+    """Keeps track of the molecule with the highest tanimoto similariy to the target"""
+
+    def __init__(self, target_mol) -> None:
+        self.fpgen = AllChem.GetRDKitFPGenerator()
+        self.target_fp = self.fpgen.GetFingerprint(target_mol)
+        self.top_sim = 0
+        self.top_mol = None
+
+    def __call__(self, trajs, rewards, flat_rewards, cond_info):
+        sims_to_target = []
+        for traj, reward in zip(trajs, rewards):
+            mol = traj["mol"]
+            if mol is not None:
+                fp = self.fpgen.GetFingerprint(mol)
+                sim = AllChem.DataStructs.TanimotoSimilarity(self.target_fp, fp)
+                sims_to_target.append(sim)
+                if sim > self.top_sim:
+                    self.top_sim = sim
+                    self.top_mol = mol
+
+        return {
+            "top_sim_to_target": self.top_sim,
+            "avg_sim_to_target": np.mean(sims_to_target),
+            "std_sim_to_target": np.std(sims_to_target),
+        }
+
+
 class NumberOfModesHook:
     """
     Keeps a list of the "modes" sampled along with their reward. A mode is defined as a
@@ -374,47 +415,64 @@ class NumberOfModesHook:
     """
 
     reward_mode: str  # "hard" or "percentile"
-    reward_threshold: List[int]  # list of reward thresholds to log
+    sim_thresholds: List[float]  # similarity thresholds to log
+    reward_threshold: float  # reward threshold to log
     stop_logging_after: int  # number of modes after which to stop logging
 
-    def __init__(self, reward_mode="hard", reward_threshold=[0.7], sim_threshold=0.7) -> None:
-        self.sim_threshold = sim_threshold
+    def __init__(
+        self,
+        reward_mode="hard",
+        reward_threshold=0.9,
+        sim_thresholds=[0.7, 0.5, 0.2],
+    ) -> None:
+        self.sim_thresholds = sim_thresholds
+        self.sim_high = max(sim_thresholds)
         self.reward_mode = reward_mode
         self.reward_threshold = reward_threshold
-        self.modes = []
-        self.mode_fps = []
+        self.modes = defaultdict(list)
+        self.mode_fps = defaultdict(list)
         self.stop_logging_after = 2000
-        self.fpgen = AllChem.GetMorganGenerator(radius=2, fpSize=2048)
+        self.fpgen = AllChem.GetRDKitFPGenerator()
+        self.simkeys = [self.get_key_from_sim(s) for s in sim_thresholds]
 
         assert self.reward_mode in ["hard", "percentile"]
         if self.reward_mode == "percentile":
-            raise NotImplemented
+            raise NotImplementedError
 
     def __call__(self, trajs, rewards, flat_rewards, cond_info):
-        if self.should_stop_logging():
-            return {}
-
+        res = {}
+        keys_to_update = set([k for k in self.simkeys if k in self.modes])
         for traj, reward in zip(trajs, rewards):
             mol = traj["mol"]
             if mol is None or reward < self.reward_threshold:
                 continue
+            fp = self.fpgen.GetFingerprint(mol)
 
-            fp = self.fpgen.GetCountFingerprint(mol)
-            if metrics.all_are_tanimoto_different(self.sim_threshold, fp, self.mode_fps):
-                self.modes.append((mol, reward))
-                self.mode_fps.append(fp)
+            for sim_thresh in self.sim_thresholds:
+                if self.should_stop_logging(sim_thresh):
+                    continue
+                simkey = self.get_key_from_sim(sim_thresh)
+                if metrics.all_are_tanimoto_different(sim_thresh, fp, self.mode_fps[simkey]):
+                    self.modes[simkey].append((mol, reward))
+                    self.mode_fps[simkey].append(fp)
+                    keys_to_update.add(simkey)
 
-        return {f"{self.__label__()}": len(self.modes)}
+        for k in keys_to_update:
+            res[f"{self.__label__(k)}"] = len(self.modes[k])
 
-    def should_stop_logging(self):
-        if self.stop_logging_after is None:
+        return res
+
+    def should_stop_logging(self, sim_thresh: float):
+        simkey = self.get_key_from_sim(sim_thresh)
+        if self.stop_logging_after is None or simkey not in self.modes:
             return False
-        return len(self.modes) >= self.stop_logging_after
+        return len(self.modes[simkey]) >= self.stop_logging_after
 
     def split_by_scaffold(self):
         """Splits the modes by scaffold then sorts by descending reward"""
+        simkey = self.get_key_from_sim(self.sim_high)
         scaffold_to_modes = defaultdict(list)
-        for mol, reward in self.modes:
+        for mol, reward in self.modes[simkey]:
             scaffold = Chem.MolToSmiles(GetScaffoldForMol(mol))
             scaffold_to_modes[scaffold].append((mol, reward))
         scaffold_to_modes = {
@@ -422,13 +480,12 @@ class NumberOfModesHook:
         }
         return scaffold_to_modes
 
-    def __label__(self):
-        if self.reward_mode == "hard":
-            return f"num_modes_>_{self.reward_threshold:.2f}"
-        elif self.reward_mode == "percentile":
-            return f"num_modes_>_{self.reward_threshold:.2f}_percentile"
-        else:
-            raise ValueError(f"Unknown reward_mode {self.reward_mode}")
+    def get_key_from_sim(self, sim_thresh: float):
+        assert sim_thresh != None
+        return f"sim<={sim_thresh:.2f}"
+
+    def __label__(self, simkey: str):
+        return f"modes_>=_{self.reward_threshold:.2f}_{simkey}"
 
 
 class NumberOfUniqueTrajectoriesHook:
