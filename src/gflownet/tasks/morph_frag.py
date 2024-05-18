@@ -305,14 +305,14 @@ def main():
     config.num_final_gen_steps = 1000
     config.num_workers = 0
     config.opt.lr_decay = 20_000
-    config.opt.learning_rate = 1e-3
-    config.algo.sampling_tau = 0.99
+    config.opt.learning_rate = 1e-4
+    config.algo.sampling_tau = 0.995
 
     config.algo.method = "SAC"
-    config.algo.max_nodes = 7
-    config.algo.train_random_action_prob = 0.01
+    config.algo.max_nodes = 4
+    config.algo.train_random_action_prob = 0.05
     config.algo.a2c.penalty = -75
-    config.algo.a2c.entropy = 0.10
+    config.algo.a2c.entropy = 0.2
     config.algo.sql.alpha = 0.01
     config.cond.temperature.sample_dist = "constant"
     config.cond.temperature.dist_params = [128.0]
@@ -329,7 +329,7 @@ def main():
     config.replay.num_from_replay = 32
     config.replay.num_new_samples = 32
 
-    config.task.morph_sim.target_path = "/home/mila/s/stephen.lu/gfn_gene/res/mmc/targets/sample_4331.pkl"
+    config.task.morph_sim.target_path = "/home/mila/s/stephen.lu/gfn_gene/res/mmc/targets/sample_338.pkl"
     config.task.morph_sim.proxy_path = "/home/mila/s/stephen.lu/gfn_gene/res/mmc/models/epoch=72-step=7738.ckpt"
     config.task.morph_sim.config_dir = "/home/mila/s/stephen.lu/gfn_gene/multimodal_contrastive/configs"
     config.task.morph_sim.config_name = "puma_sm_gmc.yaml"

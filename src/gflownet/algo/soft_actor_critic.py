@@ -55,7 +55,7 @@ class SoftActorCritic(GFNAlgorithm):
         self.invalid_penalty = -75
         self.bootstrap_own_reward = False
         # we used fixed entropy regularization coefficient for now, but it is common to learn this
-        self.alpha = 0.15
+        self.alpha = cfg.algo.a2c.entropy
         # Experimental flags
         self.sample_temp = 1
         self.graph_sampler = GraphSampler(ctx, env, self.max_len, self.max_nodes, rng, self.sample_temp)

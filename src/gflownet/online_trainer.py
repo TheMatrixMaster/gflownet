@@ -114,8 +114,8 @@ class StandardOnlineTrainer(GFNTrainer):
             self.opt_Z, lambda steps: 2 ** (-steps / self.cfg.algo.tb.Z_lr_decay)
         )
         if self.cfg.algo.method == "SAC":
-            self.opt_critic1 = self._opt(self.critic1.parameters(), lr=1e-3)
-            self.opt_critic2 = self._opt(self.critic2.parameters(), lr=1e-3)
+            self.opt_critic1 = self._opt(self.critic1.parameters(), lr=self.cfg.opt.learning_rate)
+            self.opt_critic2 = self._opt(self.critic2.parameters(), lr=self.cfg.opt.learning_rate)
 
         self.sampling_tau = self.cfg.algo.sampling_tau
         if self.sampling_tau > 0:
