@@ -135,7 +135,7 @@ def main():
     """Example of how this model can be run."""
     config = init_empty(Config())
     config.print_every = 1
-    config.log_dir = "/home/mila/s/stephen.lu/scratch/gfn_gene/toy_task"
+    config.log_dir = "~/scratch/toy_frag_logs"
     config.device = "cuda" if torch.cuda.is_available() else "cpu"
     config.overwrite_existing_exp = True
     config.num_training_steps = 10_000

@@ -306,7 +306,7 @@ def main():
     """Example of how this model can be run."""
     config = init_empty(Config())
     config.print_every = 1
-    config.log_dir = "/home/mila/s/stephen.lu/scratch/gfn_gene/toy_task"
+    config.log_dir = "~/scratch/morph_frag_logs"
     config.device = "cuda" if torch.cuda.is_available() else "cpu"
     config.overwrite_existing_exp = True
     config.pickle_mp_messages = True
@@ -336,9 +336,9 @@ def main():
     config.replay.num_from_replay = 32
     config.replay.num_new_samples = 32
 
-    config.task.morph_sim.target_path = "/home/mila/s/stephen.lu/gfn_gene/res/mmc/targets/sample_39.pkl"
-    config.task.morph_sim.proxy_path = "/home/mila/s/stephen.lu/gfn_gene/res/mmc/models/epoch=72-step=7738.ckpt"
-    config.task.morph_sim.config_dir = "/home/mila/s/stephen.lu/gfn_gene/multimodal_contrastive/configs"
+    config.task.morph_sim.target_path = "path.to/sample.pkl"
+    config.task.morph_sim.proxy_path = "path.to.mmc.proxy/epoch=72-step=7738.ckpt"
+    config.task.morph_sim.config_dir = "../../../../multimodal_contrastive/configs"
     config.task.morph_sim.config_name = "puma_sm_gmc.yaml"
     config.task.morph_sim.reduced_frag = False
     config.task.morph_sim.target_mode = "joint"
