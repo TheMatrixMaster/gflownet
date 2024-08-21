@@ -1,4 +1,4 @@
-import pickle
+import dill
 import random
 import socket
 from typing import Callable, Dict, List, Tuple, Union
@@ -204,7 +204,8 @@ class MorphSimilarityTrainer(StandardOnlineTrainer):
     def setup_task(self):
         target_path = self.cfg.task.morph_sim.target_path
         with open(target_path, "rb") as f:
-            target = pickle.load(f)
+            target = f.read()
+            target = dill.loads(target)
 
         assert "inputs" in target
 
@@ -318,7 +319,7 @@ def main():
     config.opt.lr_decay = 2000
     config.algo.sampling_tau = 0.99
 
-    config.algo.method = "SAC"
+    config.algo.method = "TB"
     config.algo.max_nodes = 6
     config.algo.train_random_action_prob = 0.05
     config.cond.temperature.sample_dist = "constant"
@@ -337,8 +338,8 @@ def main():
     config.replay.num_new_samples = 32
 
     config.task.morph_sim.target_path = "path.to/sample.pkl"
-    config.task.morph_sim.proxy_path = "path.to.mmc.proxy/epoch=72-step=7738.ckpt"
-    config.task.morph_sim.config_dir = "../../../../multimodal_contrastive/configs"
+    config.task.morph_sim.proxy_path = "path.to/mmc_proxy.ckpt"
+    config.task.morph_sim.config_dir = "absolute.path.to/multimodal_contrastive/configs"
     config.task.morph_sim.config_name = "puma_sm_gmc.yaml"
     config.task.morph_sim.reduced_frag = False
     config.task.morph_sim.target_mode = "joint"
